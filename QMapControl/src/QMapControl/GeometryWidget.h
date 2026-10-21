@@ -81,7 +81,7 @@ namespace qmapcontrol
         GeometryWidget& operator=(const GeometryWidget&) = delete;
 
         //! Destructor.
-        virtual ~GeometryWidget() = default;
+        ~GeometryWidget() override = default;
 
         /*!
          * Fetches the longitude/latitude coordinate (x/y).
@@ -105,7 +105,7 @@ namespace qmapcontrol
          * Set the visibility of the geometry.
          * @param enabled Whether to make the geometry visible.
          */
-        virtual void setVisible(const bool enabled) final;
+        void setVisible(const bool enabled) final;
 
         /*!
          * Set the alignment type to use when drawing the geometry.
@@ -126,14 +126,14 @@ namespace qmapcontrol
         /*!
          * Set the minimum size a point/widget/pixmap can be drawn.
          * Set to 'QSizeF(-1.0, -1.0)' to disable the limitation.
-         * @param size The minimum size to draw a point/widget/pixmap.
+         * @param size_px The minimum size to draw a point/widget/pixmap.
          */
         void setDrawMinimumPx(const QSizeF& size_px = QSizeF(-1.0, -1.0));
 
         /*!
          * Set the maximum size a point/widget/pixmap can be drawn.
          * Set to 'QSizeF(-1.0, -1.0)' to disable the limitation.
-         * @param size The maximal size to draw a point/widget/pixmap.
+         * @param size_px The maximal size to draw a point/widget/pixmap.
          */
         void setDrawMaximumPx(const QSizeF& size_px = QSizeF(-1.0, -1.0));
 

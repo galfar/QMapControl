@@ -84,7 +84,7 @@ namespace qmapcontrol
                 painter.rotate(rotation());
 
                 // Draw the pixmap.
-                painter.drawPixmap(-pixmap_rect_px.rawRect().width() / 2.0, -pixmap_rect_px.rawRect().height() / 2.0, image());
+                painter.drawPixmap(QPointF(-image().size().width() / 2.0, -image().height()/ 2.0), image());
 
                 // Un-translate.
                 painter.rotate(-rotation());

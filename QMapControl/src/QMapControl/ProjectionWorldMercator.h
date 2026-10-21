@@ -49,7 +49,7 @@ namespace qmapcontrol
         ProjectionWorldMercator& operator=(const ProjectionWorldMercator&) = delete;
 
         //! Destructor.
-        ~ProjectionWorldMercator() = default;
+        ~ProjectionWorldMercator() override = default;
 
         /*!
          * The number of tiles on the x-axis for a given zoom.

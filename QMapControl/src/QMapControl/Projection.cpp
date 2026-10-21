@@ -25,13 +25,13 @@
 
 #include "Projection.h"
 
-// STL includes.
-#include <memory>
-
 // Local includes.
 #include "ProjectionEquirectangular.h"
 #include "ProjectionSphericalMercator.h"
 #include "ProjectionWorldMercator.h"
+
+// STL includes.
+#include <memory>
 
 namespace qmapcontrol
 {
@@ -56,18 +56,28 @@ namespace qmapcontrol
 
     void projection::set(const EPSG type)
     {
+        m_instance.reset(create(type));
+    }
+
+    Projection* projection::create(const EPSG type)
+    {
         switch (type) {
         case EPSG::Equirectangular:
-            m_instance.reset(new ProjectionEquirectangular);
-            break;
+            return new ProjectionEquirectangular();
         case EPSG::SphericalMercator:
-            m_instance.reset(new ProjectionSphericalMercator);
-            break;
+            return new ProjectionSphericalMercator();
         case EPSG::WorldMercator:
-            m_instance.reset(new ProjectionWorldMercator);
-            break;
+            return new ProjectionWorldMercator();
         default:
             qFatal("Unsuported EPSG: %d", static_cast<int>(type));
+            Q_UNREACHABLE();
         }
+    }
+
+    int Projection::ipow2(int exponent) const {
+        if (exponent >= 31) {
+            return -1;
+        }
+        return 1 << exponent;
     }
 }

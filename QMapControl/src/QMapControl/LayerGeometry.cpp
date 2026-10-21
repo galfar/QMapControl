@@ -30,8 +30,11 @@
 #include "GeometryLineString.h"
 #include "GeometryPolygon.h"
 #include "Projection.h"
+#include <QPainterPath>
 
+#include <QPainterPath>
 #include <algorithm>
+
 namespace qmapcontrol
 {
     LayerGeometry::LayerGeometry(const std::string& name, const int zoom_minimum, const int zoom_maximum, QObject* parent)
@@ -56,7 +59,7 @@ namespace qmapcontrol
 
         // Sort by z-index
         std::sort(return_geometries.begin(), return_geometries.end(),
-                  [](std::shared_ptr<Geometry> a, std::shared_ptr<Geometry> b) {
+                  [](const std::shared_ptr<Geometry>& a, const std::shared_ptr<Geometry>& b) {
                       return a->zIndex() < b->zIndex();
                   });
 
@@ -191,6 +194,12 @@ namespace qmapcontrol
         }
     }
 
+    void LayerGeometry::addGeometry(const std::shared_ptr<Geometry>& geometry, int zIndex)
+    {
+        geometry->setZIndex(zIndex);
+        addGeometry(geometry, true);
+    }
+
     void LayerGeometry::removeGeometry(const std::shared_ptr<Geometry>& geometry, const bool disable_redraw)
     {
         // Check the geometry is valid.
@@ -206,7 +215,7 @@ namespace qmapcontrol
                     QWriteLocker locker(&m_geometries_mutex);
 
                     // Disconnect any signals that were previously connected.
-                    QObject::disconnect(geometry.get(), 0, this, 0);
+                    QObject::disconnect(geometry.get(), nullptr, this, nullptr);
 
                     // Remove the geometry from the list.
                     m_geometries.erase(std::static_pointer_cast<GeometryPoint>(geometry)->coord(), geometry);
@@ -222,7 +231,7 @@ namespace qmapcontrol
                     QWriteLocker locker(&m_geometry_widgets_mutex);
 
                     // Disconnect any signals that were previously connected.
-                    QObject::disconnect(geometry.get(), 0, this, 0);
+                    QObject::disconnect(geometry.get(), nullptr, this, nullptr);
 
                     // Find the object in the container.
                     const auto itr_find = m_geometry_widgets.find(std::static_pointer_cast<GeometryWidget>(geometry));
@@ -244,7 +253,7 @@ namespace qmapcontrol
                     QWriteLocker locker(&m_geometries_mutex);
 
                     // Disconnect any signals that were previously connected.
-                    QObject::disconnect(geometry.get(), 0, this, 0);
+                    QObject::disconnect(geometry.get(), nullptr, this, nullptr);
 
                     // Loop through each GeometryLineString point and remove it to the container.
                     for (const auto& point : std::static_pointer_cast<GeometryLineString>(geometry)->points())
@@ -264,7 +273,7 @@ namespace qmapcontrol
                     QWriteLocker locker(&m_geometries_mutex);
 
                     // Disconnect any signals that were previously connected.
-                    QObject::disconnect(geometry.get(), 0, this, 0);
+                    QObject::disconnect(geometry.get(), nullptr, this, nullptr);
 
                     // Loop through each GeometryPolygon point and remove it to the container.
                     for (const auto& point : std::static_pointer_cast<GeometryPolygon>(geometry)->points())
@@ -348,11 +357,23 @@ namespace qmapcontrol
             // Save the current painter's state.
             painter.save();
 
+            const std::vector<std::shared_ptr<Geometry>> geometries = getGeometries(backbuffer_rect_coord);
+
             // Loop through each geometry and draw it.
-            for (const auto& geometry : getGeometries(backbuffer_rect_coord))
+            for (auto geometryIter = geometries.cbegin(); geometryIter != geometries.cend(); ++geometryIter)
             {
+                // Determine areas clipped by upper layers.
+                QPainterPath clipPath;
+                clipPath.setFillRule(Qt::WindingFill);
+                for (auto upperGeometryIter = std::next(geometryIter); upperGeometryIter != geometries.cend(); ++upperGeometryIter) {
+                    (*upperGeometryIter)->drawClippath(clipPath, backbuffer_rect_coord, controller_zoom);
+                }
+                QPainterPath pathWindow;
+                pathWindow.addRect(backbuffer_rect_px.rawRect());
+                painter.setClipPath(pathWindow.subtracted(clipPath));
+
                 // Draw the geometry (this will not move widgets).
-                geometry->draw(painter, backbuffer_rect_coord, controller_zoom);
+                (*geometryIter)->draw(painter, backbuffer_rect_coord, controller_zoom);
             }
 
             // Restore the painter's state.

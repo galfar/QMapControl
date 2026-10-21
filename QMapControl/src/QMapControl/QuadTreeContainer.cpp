@@ -25,6 +25,7 @@
 
 #include "QuadTreeContainer.h"
 #include "Geometry.h"
+#include <stdexcept>
 
 namespace qmapcontrol
 {

@@ -47,7 +47,7 @@ namespace qmapcontrol
          * This constructor creates a point which will display an image pixmap.
          * @param point_coord The point to draw the image at (world coordinates).
          * @param image The image to draw.
-         * @param base_size_px The size of the shape (pixels).
+         * @param base_zoom Zoom level for default size.
          * @param zoom_minimum The minimum zoom level to show this geometry at.
          * @param zoom_maximum The maximum zoom level to show this geometry at.
          */
@@ -71,7 +71,7 @@ namespace qmapcontrol
         GeometryPointImageScaled& operator=(const GeometryPointImageScaled&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPointImageScaled() = default;
+        ~GeometryPointImageScaled() override = default;
 
     public:
         /*!
@@ -97,10 +97,10 @@ namespace qmapcontrol
     protected:
         /*!
          * \brief drawShape Draws the shape in a transformed painter according to zoom/translate/rotate status
-         * \param painter
+         * \param painter The painter.
          * \param rect The rect in pixel coordinates
          */
-        virtual void drawShape(QPainter &painter, const RectWorldPx &rect);
+        void drawShape(QPainter &painter, const RectWorldPx &rect) override;
 
     private:
         /// The image pixmap to draw.

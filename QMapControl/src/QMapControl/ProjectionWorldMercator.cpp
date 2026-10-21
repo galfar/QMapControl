@@ -32,13 +32,13 @@ namespace qmapcontrol
     int ProjectionWorldMercator::tilesX(const int zoom) const
     {
         // Return the number of tiles for the x-axis.
-        return std::pow(2, zoom);
+        return ipow2(zoom);
     }
 
     int ProjectionWorldMercator::tilesY(const int zoom) const
     {
         // Return the number of tiles for the y-axis.
-        return std::pow(2, zoom);
+        return ipow2(zoom);
     }
 
     constexpr double kEarthMajor = 6378137.0;     // WGS84 semi-major axis
@@ -63,10 +63,10 @@ namespace qmapcontrol
         // latlon -> meters
         double lat_rad = point_coord.latitude() * DEG2RAD;
         double con = kEccentricity * sin(lat_rad);
-        double ts = tan(M_PI/4 - lat_rad / 2) / pow((1 - con) / (1 + con), kEccentricity / 2);
+        double ts = tan(M_PI/4 + lat_rad / 2) * pow((1 - con) / (1 + con), kEccentricity / 2);
 
         double x_m = point_coord.longitude() * DEG2RAD * kEarthMajor;
-        double y_m = -kEarthMajor * log(std::max(ts, 1e-10));
+        double y_m = kEarthMajor * log(std::max(ts, 1e-10));
 
         // meters -> pixels
         const double res = resolution(tile_size_px, zoom);

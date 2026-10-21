@@ -56,7 +56,7 @@ namespace qmapcontrol
         GeometryPointCircle& operator=(const GeometryPointCircle&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPointCircle() = default;
+        ~GeometryPointCircle() override = default;
 
     protected:
         /*!

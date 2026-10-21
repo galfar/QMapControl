@@ -88,7 +88,7 @@ namespace qmapcontrol
         Layer& operator=(const Layer&) = delete;
 
         //! Destructor.
-        virtual ~Layer() = default;
+        ~Layer() override = default;
 
         /*!
          * Fetches the layer type.
@@ -154,7 +154,7 @@ namespace qmapcontrol
          * @param controller_zoom The current controller zoom.
          * @return true if mouse press was handled by layer.
          */
-        virtual bool mousePressEvent(const QMouseEvent* mouse_event, const PointWorldCoord& mouse_point_coord, const int controller_zoom) const = 0;
+        virtual bool mousePressEvent(const QMouseEvent* mouse_event, const PointWorldCoord& mouse_point_coord, const int controller_zoom) const;
 
         /*!
          * Draws each map adapter and geometry to a pixmap using the provided painter.
@@ -168,7 +168,7 @@ namespace qmapcontrol
         /*!
          * Signal emitted when a change has occurred that requires the layer to be redrawn.
          */
-        void requestRedraw() const;
+        void requestRedraw();
 
     private:
         /// The layer type.

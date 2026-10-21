@@ -36,8 +36,8 @@
 
 namespace qmapcontrol
 {
-    MapAdapterWMS::MapAdapterWMS(const QUrl& base_url, const std::set<projection::EPSG>& epsg_projections, QObject* parent)
-          : MapAdapter(base_url, epsg_projections, 0, 17, 0, parent)
+    MapAdapterWMS::MapAdapterWMS(const QUrl& base_url, const std::set<projection::EPSG>& epsg_projections)
+          : MapAdapterRemote(base_url, epsg_projections, 0, 17)
     {
         // Perform initial query modificiations.
         setBaseUrl(base_url);
@@ -132,7 +132,7 @@ namespace qmapcontrol
         }
 
         // Set the url path.
-        MapAdapter::setBaseUrl(modified_url);
+        MapAdapterRemote::setBaseUrl(modified_url);
     }
 
     QUrl MapAdapterWMS::tileQuery(const int x, const int y, const int controller_zoom) const

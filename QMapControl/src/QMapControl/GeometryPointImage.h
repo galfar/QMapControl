@@ -69,7 +69,7 @@ namespace qmapcontrol
         GeometryPointImage& operator=(const GeometryPointImage&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPointImage() = default;
+        ~GeometryPointImage() override = default;
 
     public:
         /*!

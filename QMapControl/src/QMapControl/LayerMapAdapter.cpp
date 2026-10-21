@@ -60,16 +60,11 @@ namespace qmapcontrol
 
             // Set the map adapter.
             m_mapAdapter = mapadapter;
+            m_tilesStatus = TilesStatus::Empty;
         }
 
         // Emit to redraw layer.
         emit requestRedraw();
-    }
-
-    bool LayerMapAdapter::mousePressEvent(const QMouseEvent* /*mouse_event*/, const PointWorldCoord& /*mouse_point_coord*/, const int /*controller_zoom*/) const
-    {
-        // Do nothing.
-        return false;
     }
 
     void LayerMapAdapter::draw(QPainter& painter, const RectWorldPx& backbuffer_rect_px, const int controller_zoom) const
@@ -78,8 +73,9 @@ namespace qmapcontrol
         QReadLocker locker(&m_mapadapter_mutex);
 
         // Check the layer is visible and a map adapter is set.
-        if (isVisible(controller_zoom) && m_mapAdapter != nullptr)
-        {            
+        if (isVisible(controller_zoom) && (m_mapAdapter != nullptr)
+                && m_mapAdapter->prepareForDrawing(backbuffer_rect_px, controller_zoom))
+        {
             // The current tile size.
             const QSizeF tile_size_px(ImageManager::get().tileSizePx(), ImageManager::get().tileSizePx());
 
@@ -89,6 +85,9 @@ namespace qmapcontrol
             const int furthest_tile_right = int(std::floor(backbuffer_rect_px.rightPx() / tile_size_px.width()));
             const int furthest_tile_bottom = int(std::floor(backbuffer_rect_px.bottomPx() / tile_size_px.height()));
 
+            auto currentOverallStatus = TilesStatus::Valid;
+            auto loadingKey = ImageManager::get().loadingPixmapCacheKey();
+            auto emptyKey = ImageManager::get().emptyPixmapCacheKey();
             // Loop through the tiles to draw (left to right).
             for (int i = furthest_tile_left; i <= furthest_tile_right; ++i)
             {
@@ -100,14 +99,37 @@ namespace qmapcontrol
                     {
                         // Calculate the top left point.
                         const PointWorldPx top_left_px(i * tile_size_px.width(), j * tile_size_px.height());
+                        auto tile = m_mapAdapter->getTileImage(i, j, controller_zoom);
 
+                        if (currentOverallStatus == TilesStatus::Valid)
+                        {
+                            auto key = tile.cacheKey();
+                            if (key == loadingKey)
+                            {
+                                currentOverallStatus = TilesStatus::Loading;
+                            }
+                            else if (key == emptyKey)
+                            {
+                                currentOverallStatus = TilesStatus::Empty;
+                            }
+                        }
                         // Draw the tile.
-                        painter.drawPixmap(top_left_px.rawPoint(), ImageManager::get().getImage(m_mapAdapter->tileQuery(i, j, controller_zoom)));
+                        painter.drawPixmap(top_left_px.rawPoint(), tile);
                     }
                 }
             }
+            m_tilesStatus = currentOverallStatus;
 
+            // prefetching is OK for network based tiles, where the download is queued
+            // for geopackage it does nothing as it was a blocking function
+            // which was disabled on a level of ImageManager::getImage
+            //
+            // Direct blocking inside draw makes more harm than gain.
+            // for a tiny map (500 x 500px) we have 4 (partially) visible tiles, while acquiring 16 more tiles to prefetch
+            // for a larger map (1280 x 1024px) the ratio is 20 visible / 26 prefetch
+            // it has no sense to spend more time on something that "might" be needed
             prefetchTiles(furthest_tile_left, furthest_tile_top, furthest_tile_right, furthest_tile_bottom, controller_zoom);
+            m_mapAdapter->finishDrawing();
         }
     }
 
@@ -125,14 +147,14 @@ namespace qmapcontrol
             if (m_mapAdapter->isTileValid(i, prefetch_tile_top, controller_zoom))
             {
                 // Prefetch the tile.
-                ImageManager::get().prefetchImage(m_mapAdapter->tileQuery(i, prefetch_tile_top, controller_zoom));
+                m_mapAdapter->prefetchTile(i, prefetch_tile_top, controller_zoom);
             }
 
             // Bottom row - check the tile is valid.
             if (m_mapAdapter->isTileValid(i, prefetch_tile_bottom, controller_zoom))
             {
                 // Prefetch the tile.
-                ImageManager::get().prefetchImage(m_mapAdapter->tileQuery(i, prefetch_tile_bottom, controller_zoom));
+                m_mapAdapter->prefetchTile(i, prefetch_tile_bottom, controller_zoom);
             }
         }
 
@@ -143,14 +165,14 @@ namespace qmapcontrol
             if (m_mapAdapter->isTileValid(prefetch_tile_left, j, controller_zoom))
             {
                 // Prefetch the tile.
-                ImageManager::get().prefetchImage(m_mapAdapter->tileQuery(prefetch_tile_left, j, controller_zoom));
+                m_mapAdapter->prefetchTile(prefetch_tile_left, j, controller_zoom);
             }
 
             // Right column - check the tile is valid.
             if (m_mapAdapter->isTileValid(prefetch_tile_right, j, controller_zoom))
             {
                 // Prefetch the tile.
-                ImageManager::get().prefetchImage(m_mapAdapter->tileQuery(prefetch_tile_right, j, controller_zoom));
+                m_mapAdapter->prefetchTile(prefetch_tile_right, j, controller_zoom);
             }
         }
     }

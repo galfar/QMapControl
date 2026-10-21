@@ -24,38 +24,21 @@
 */
 
 #include "MapAdapter.h"
+#include "ImageManager.h"
 
 // STL includes.
 #include <cmath>
 
 namespace qmapcontrol
 {
-    MapAdapter::MapAdapter(const QUrl& base_url,
-                           const std::set<projection::EPSG>& epsg_projections,
+    MapAdapter::MapAdapter(const std::set<projection::EPSG>& epsg_projections,
                            const int adapter_zoom_minimum,
-                           const int adapter_zoom_maximum,
-                           const int adapter_zoom_offset,
-                           QObject* parent)
-        : QObject(parent),
-          m_base_url(base_url),
-          m_epsg_projections(epsg_projections),
-          m_adapter_zoom_minimum(adapter_zoom_minimum),
+                           const int adapter_zoom_maximum)
+        : m_adapter_zoom_minimum(adapter_zoom_minimum),
           m_adapter_zoom_maximum(adapter_zoom_maximum),
-          m_adapter_zoom_offset(adapter_zoom_offset)
+          m_tileUpscaling(false),
+          m_epsg_projections(epsg_projections)
     {
-
-    }
-
-    QUrl MapAdapter::getBaseUrl() const
-    {
-        // Return the url.
-        return m_base_url;
-    }
-
-    void MapAdapter::setBaseUrl(const QUrl& base_url)
-    {
-        // Set the base url.
-        m_base_url = base_url;
     }
 
     bool MapAdapter::isTileValid(const int x, const int y, const int controller_zoom) const
@@ -69,20 +52,15 @@ namespace qmapcontrol
             // Projection not supported, fail!
             qWarning("Unsupported EPSG projection: %d", projection::get().epsg());
         }
-        // Else check the zoom is supported (if min <= max).
-        else if (m_adapter_zoom_minimum <= m_adapter_zoom_maximum &&
-           (toAdapterZoom(controller_zoom) < m_adapter_zoom_minimum || toAdapterZoom(controller_zoom) > m_adapter_zoom_maximum))
-        {
-            // Controller zoom is out of range, fail!
-        }
-        // Else check the zoom is supported (if min > max).
-        else if (m_adapter_zoom_minimum > m_adapter_zoom_maximum &&
-            (toAdapterZoom(controller_zoom) < m_adapter_zoom_maximum || toAdapterZoom(controller_zoom) > m_adapter_zoom_minimum))
+        // Else check the zoom is supported
+        else if ((toAdapterZoom(controller_zoom) < m_adapter_zoom_minimum)
+                 || ((toAdapterZoom(controller_zoom) > m_adapter_zoom_maximum) && !m_tileUpscaling))
         {
             // Controller zoom is out of range, fail!
         }
         // Else, check x and y are between 0 and "max_tiles" - 1 inclusive (as 0 based indexed!)
-        else if (x >= 0 && x < projection::get().tilesX(controller_zoom) && y >= 0 && y < projection::get().tilesY(controller_zoom))
+        else if ((x >= 0) && (x < projection::get().tilesX(controller_zoom))
+                 && (y >= 0) && (y < projection::get().tilesY(controller_zoom)))
         {
             // Success, tile is valid.
             success = true;
@@ -94,17 +72,19 @@ namespace qmapcontrol
 
     int MapAdapter::toAdapterZoom(const int controller_zoom) const
     {
-        // Default return zoom is minimum + controller - offset.
-        int return_zoom(m_adapter_zoom_minimum + controller_zoom - m_adapter_zoom_offset);
+        return controller_zoom;
+    }
 
-        // Does the map adapter's zoom scale run backwards?
-        if (m_adapter_zoom_minimum > m_adapter_zoom_maximum)
-        {
-            // Zoom is minimum - controller + offset (as minimum is larger number!).
-            return_zoom = m_adapter_zoom_minimum - controller_zoom + m_adapter_zoom_offset;
+    QPixmap MapAdapter::getTileImage(const int x, const int y, const int controller_zoom) const
+    {
+        return getTileImageInternal(x, y, controller_zoom, false);
+    }
+
+    void MapAdapter::prefetchTile(const int x, const int y, const int controller_zoom) const
+    {
+        ImageManager& imgManager = ImageManager::get();
+        if (!imgManager.isTileImagePresent(sourceId(), x, y, controller_zoom)) {
+            (void)getTileImageInternal(x, y, controller_zoom, true);
         }
-
-        // Return the zoom with adapter_zoom_offset.
-        return return_zoom;
     }
 }

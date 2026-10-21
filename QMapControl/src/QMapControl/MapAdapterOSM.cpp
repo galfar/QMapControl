@@ -31,23 +31,20 @@ namespace qmapcontrol
         const std::pair<QUrl, int> getTileServerInfo(const MapAdapterOSM::TileServer tileServer)
         {
             const std::map<MapAdapterOSM::TileServer, std::pair<QUrl, int>> tileServers = {
-                { MapAdapterOSM::TileServer::OpenStreetMap, { QUrl("http://tile.openstreetmap.org/%zoom/%x/%y.png"),       19 }},
-                { MapAdapterOSM::TileServer::OpenTopoMap,   { QUrl("https://tile.opentopomap.org/%zoom/%x/%y.png"),        17 }},
-                { MapAdapterOSM::TileServer::OpenCycleMap,  { QUrl("http://tile.thunderforest.com/cycle/%zoom/%x/%y.png"), 20 }},
-                { MapAdapterOSM::TileServer::StamenToner,   { QUrl("http://tile.stamen.com/toner/%zoom/%x/%y.png"),        20 }},
+                { MapAdapterOSM::TileServer::OpenStreetMap, { QUrl("http://tile.openstreetmap.org/%zoom/%x/%y.png"), 19 }},
+                { MapAdapterOSM::TileServer::OpenTopoMap,   { QUrl("https://tile.opentopomap.org/%zoom/%x/%y.png"),  17 }}
             };
-
             return tileServers.at(tileServer);
         }
     }
 
-    MapAdapterOSM::MapAdapterOSM(TileServer tileServer, QObject* parent)
-        : MapAdapterOSM(getTileServerInfo(tileServer), parent)
+    MapAdapterOSM::MapAdapterOSM(TileServer tileServer)
+        : MapAdapterOSM(getTileServerInfo(tileServer))
     {
     }
 
-    MapAdapterOSM::MapAdapterOSM(const std::pair<QUrl, int>& server, QObject* parent)
-        : MapAdapterTile(server.first, { projection::EPSG::SphericalMercator }, 0, server.second, 0, false, parent)
+    MapAdapterOSM::MapAdapterOSM(const std::pair<QUrl, int>& server)
+        : MapAdapterRemote(server.first, { projection::EPSG::SphericalMercator }, 0, server.second, false)
     {
     }
 }

@@ -70,7 +70,7 @@ namespace qmapcontrol
         LayerGeometry& operator=(const LayerGeometry&) = delete;
 
         //! Destructor.
-        virtual ~LayerGeometry() = default;
+        ~LayerGeometry() override = default;
 
         /*!
          * Returns the Geometry objects from this Layer (Use this instead of the member variable for thread-safety).
@@ -99,6 +99,13 @@ namespace qmapcontrol
          * @param disable_redraw Whether to disable the redraw call after the geometry is added.
          */
         void addGeometry(const std::shared_ptr<Geometry>& geometry, const bool disable_redraw = false);
+
+        /*!
+         * Adds a Geometry object to this Layer (with disable_redraw as true).
+         * @param geometry The new geometry to add.
+         * @param zIndex z-index of the added geometry
+         */
+        void addGeometry(const std::shared_ptr<Geometry>& geometry, int zIndex);
 
         /*!
          * Removes a Geometry object from this Layer.

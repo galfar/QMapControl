@@ -57,7 +57,7 @@ namespace qmapcontrol
         GeometryPointArrow& operator=(const GeometryPointArrow&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPointArrow()  = default;
+        ~GeometryPointArrow() override = default;
 
     protected:
         /*!

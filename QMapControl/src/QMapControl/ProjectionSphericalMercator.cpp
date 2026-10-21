@@ -32,13 +32,13 @@ namespace qmapcontrol
     int ProjectionSphericalMercator::tilesX(const int zoom) const
     {
         // Return the number of tiles for the x-axis.
-        return std::pow(2, zoom);
+        return ipow2(zoom);
     }
 
     int ProjectionSphericalMercator::tilesY(const int zoom) const
     {
         // Return the number of tiles for the y-axis.
-        return std::pow(2, zoom);
+        return ipow2(zoom);
     }
 
     int ProjectionSphericalMercator::epsg() const

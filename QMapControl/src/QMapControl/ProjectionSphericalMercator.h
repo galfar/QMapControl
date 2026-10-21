@@ -50,7 +50,7 @@ namespace qmapcontrol
         ProjectionSphericalMercator& operator=(const ProjectionSphericalMercator&) = delete;
 
         //! Destructor.
-        ~ProjectionSphericalMercator() = default;
+        ~ProjectionSphericalMercator() override = default;
 
         /*!
          * The number of tiles on the x-axis for a given zoom.

@@ -59,7 +59,7 @@ namespace qmapcontrol
         GeometryPolygon& operator=(const GeometryPolygon&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPolygon()  = default;
+        ~GeometryPolygon() override = default;
 
     public:
 
@@ -104,7 +104,7 @@ namespace qmapcontrol
          * @param backbuffer_rect_coord Only draw geometries that are contained in the backbuffer rect (world coordinates).
          * @param controller_zoom The current controller zoom.
          */
-        virtual void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom) override;
+        void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom) override;
 
     private:
         /// The points that the polygon is made up of.

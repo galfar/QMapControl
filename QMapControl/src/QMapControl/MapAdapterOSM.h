@@ -27,36 +27,31 @@
 
 // Local includes.
 #include "qmapcontrol_global.h"
-#include "MapAdapterTile.h"
+#include "MapAdapterRemote.h"
 
 namespace qmapcontrol
 {
-    //! MapAdapter for OpenStreetMap.
     /*!
-     * This is a conveniece class, which extends and configures a MapAdapterTile.
+     * MapAdapter for OpenStreetMap.
      *
      * @author Kai Winter <kaiwinter@gmx.de>
      * @author Chris Stylianou <chris5287@gmail.com>
      */
-    class QMAPCONTROL_EXPORT MapAdapterOSM : public MapAdapterTile
+    class QMAPCONTROL_EXPORT MapAdapterOSM : public MapAdapterRemote
     {
-        Q_OBJECT
     public:
         /// Different tile servers with OSM data
         enum class TileServer {
             OpenStreetMap,
-            OpenTopoMap,
-            OpenCycleMap,
-            StamenToner
+            OpenTopoMap
         };
 
         //! Constructor.
         /*!
          * This construct a OpenStreetmap MapAdapter.
          * @param tileServer Tile server where to pull tiles from.
-         * @param parent QObject parent ownership.
          */
-        explicit MapAdapterOSM(TileServer tileServer = TileServer::OpenStreetMap, QObject* parent = nullptr);
+        explicit MapAdapterOSM(TileServer tileServer = TileServer::OpenStreetMap);
 
         //! Disable copy constructor.
         MapAdapterOSM(const MapAdapterOSM&) = delete;
@@ -65,9 +60,9 @@ namespace qmapcontrol
         MapAdapterOSM& operator=(const MapAdapterOSM&) = delete;
 
         //! Destructor.
-        ~MapAdapterOSM() = default;
+        ~MapAdapterOSM() override = default;
 
     private:
-        MapAdapterOSM(const std::pair<QUrl, int>& server, QObject* parent);
+        explicit MapAdapterOSM(const std::pair<QUrl, int>& server);
     };
 }

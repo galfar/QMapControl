@@ -67,7 +67,7 @@ namespace qmapcontrol
         GeometryPoint& operator=(const GeometryPoint&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPoint() = default;
+        ~GeometryPoint() override = default;
 
     public:
         /*!
@@ -88,7 +88,7 @@ namespace qmapcontrol
          * @param controller_zoom The current controller zoom.
          * @return the bounding box.
          */
-        virtual RectWorldCoord boundingBox(const int controller_zoom) const override;
+        RectWorldCoord boundingBox(const int controller_zoom) const override;
 
         /*!
          * Checks if the geometry touches (intersects) with another geometry.
@@ -96,7 +96,7 @@ namespace qmapcontrol
          * @param controller_zoom The current controller zoom.
          * @return whether the geometries touch (intersects).
          */
-        virtual bool touches(const Geometry* geometry, const int controller_zoom) const override;
+        bool touches(const Geometry* geometry, const int controller_zoom) const override;
 
         /*!
          * Draws the geometry to a pixmap using the provided painter.
@@ -104,7 +104,7 @@ namespace qmapcontrol
          * @param backbuffer_rect_coord Only draw geometries that are contained in the backbuffer rect (world coordinates).
          * @param controller_zoom The current controller zoom.
          */
-        virtual void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom) override;
+        void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom) override;
 
     private:
         /// The point to be displayed (world coordinates).
