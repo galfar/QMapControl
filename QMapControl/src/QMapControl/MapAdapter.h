@@ -26,8 +26,8 @@
 #pragma once
 
 // Qt includes.
-#include <QtCore/QObject>
-#include <QtCore/QUrl>
+#include <QPixmap>
+#include <QString>
 
 // STL includes.
 #include <set>
@@ -38,23 +38,14 @@
 
 namespace qmapcontrol
 {
-    //! Used to fit map servers into QMapControl.
     /*!
-     * There are two ready-made MapAdapters:
-     *  - MapAdapterTile, which is ready to use for OpenStreetMap or Google (Mercator projection).
-     *  - MapAdapterWMS, which could be used for the most WMS-Server (some servers show errors, because of image ratio).
-     *
-     * MapAdapters are also needed to form the HTTP-Queries to load the map tiles.
-     * The maps from WMS Servers are also divided into tiles, because those can be better cached.
-     *
-     * @see MapAdapterTile, @see MapAdapterWMS
+     * Used to fit map data sources into QMapControl.
      *
      * @author Kai Winter <kaiwinter@gmx.de>
      * @author Chris Stylianou <chris5287@gmail.com>
      */
-    class QMAPCONTROL_EXPORT MapAdapter : public QObject
+    class QMAPCONTROL_EXPORT MapAdapter
     {
-        Q_OBJECT
     public:
         //! Disable copy constructor.
         MapAdapter(const MapAdapter&) = delete;
@@ -66,74 +57,77 @@ namespace qmapcontrol
         virtual ~MapAdapter() = default;
 
         /*!
-         * Get the base url.
-         * @return the base url.
+         * These methods give map adapters a possibility to prepare for and cleanup after
+         * the layer draws itself (using this adapater).
          */
-        QUrl getBaseUrl() const;
+        virtual bool prepareForDrawing(const RectWorldPx& view_rect_px, const int controller_zoom) {
+            Q_UNUSED(view_rect_px); Q_UNUSED(controller_zoom); return true; }
+        virtual void finishDrawing() { }
 
         /*!
-         * Change the base url post-initialisation.
-         * @param base_url The new base url to set.
+         * Returns tile image for given XYZ tile coordinate. Tile can come from
+         * remote or local source depending on given MapAdapter descentant.
          */
-        virtual void setBaseUrl(const QUrl& base_url);
+        QPixmap getTileImage(const int x, const int y, const int controller_zoom) const;
 
         /*!
-         * Indicates whether a given x, y and controller zoom would provide a valid image tile.
+         * Prefetches a tile that may be soon needed for display.
+         */
+        void prefetchTile(const int x, const int y, const int controller_zoom) const;
+
+        /*!
+         * Indicates whether a given x, y and controller zoom would provide a valid tile image.
          * @param x The x coordinate required.
          * @param y The y coordinate required.
          * @param controller_zoom The current controller zoom.
          * @return whether their would be a valid image tile.
          */
-        bool isTileValid(const int x, const int y, const int controller_zoom) const;
+        virtual bool isTileValid(const int x, const int y, const int controller_zoom) const;
 
         /*!
-         * Generates the url required to fetch the image tile for the specified x, y and zoom.
-         * @param x The x coordinate required.
-         * @param y The y coordinate required.
-         * @param controller_zoom The current controller zoom.
-         * @return the generated url.
+         * Unique identifier of map adapter data source used for tile queries and caching.
          */
-        virtual QUrl tileQuery(const int x, const int y, const int controller_zoom) const = 0;
+        virtual QString sourceId() const = 0;
+
+        /*!
+         * Set to true to enable upscaling of tile images when controller_zoom > adapter_max_zoom.
+         */
+        void setTileUpscaling(bool upscaling) { m_tileUpscaling = upscaling; }
+
+        int zoomMaximum() const { return m_adapter_zoom_maximum; }
+        int zoomMinimum() const { return m_adapter_zoom_minimum; }
 
     protected:
+        /// The minimum adapter zoom level available.
+        int m_adapter_zoom_minimum;
+        /// The maximum adapter zoom level available.
+        int m_adapter_zoom_maximum;
+        /// upscaling of tile images when controller_zoom > adapter_max_zoom
+        bool m_tileUpscaling;
+
         //! Constructor.
         /*!
          * This construct a Map Adapter.
-         * @param base_url The base url of the map server.
          * @param epsg_projections The supported EPSG projections.
          * @param adapter_zoom_minimum The adapter's minimum zoom level available.
          * @param adapter_zoom_maximum The adapter'smaximum zoom level available.
-         * @param adapter_zoom_offset The initial offset from the controller zoom at level 0.
-         * @param parent QObject parent ownership.
          */
-        MapAdapter(const QUrl& base_url,
-                   const std::set<projection::EPSG>& epsg_projections,
+        MapAdapter(const std::set<projection::EPSG>& epsg_projections,
                    const int adapter_zoom_minimum,
-                   const int adapter_zoom_maximum,
-                   const int adapter_zoom_offset,
-                   QObject* parent = nullptr);
+                   const int adapter_zoom_maximum);
 
         /*!
          * Translates the controller zoom in the map adapters zoom.
+         * Special adapters have a chance here to adjust the zoom level.
          * @param controller_zoom The controller's zoom.
          * @return the map adapters zoom.
          */
-        int toAdapterZoom(const int controller_zoom) const;
+        virtual int toAdapterZoom(const int controller_zoom) const;
+
+        virtual QPixmap getTileImageInternal(const int x, const int y, const int controller_zoom, bool prefetchOnly) const = 0;
 
     private:
-        /// The base url path of the map server.
-        QUrl m_base_url;
-
         /// The supported EPSG projections.
         const std::set<projection::EPSG> m_epsg_projections;
-
-        /// The minimum adapter zoom level available.
-        const int m_adapter_zoom_minimum;
-
-        /// The maximum adapter zoom level available.
-        const int m_adapter_zoom_maximum;
-
-        /// The initial offset from the controller zoom at level 0.
-        const int m_adapter_zoom_offset;
     };
 }

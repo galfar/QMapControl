@@ -25,53 +25,68 @@
 
 #pragma once
 
+// Qt includes.
+#include <QUrl>
+#include <QList>
+
 // Local includes.
 #include "qmapcontrol_global.h"
 #include "MapAdapter.h"
 
 namespace qmapcontrol
 {
-    //! MapAdapter for servers with image tiles.
     /*!
+     * MapAdapter for servers with image tiles.
      * Use this derived MapAdapter to display maps from Tiled Map servers (OpenStreetMap/Google/etc...).
      *
      * @author Kai Winter <kaiwinter@gmx.de>
      * @author Chris Stylianou <chris5287@gmail.com>
      */
-    class QMAPCONTROL_EXPORT MapAdapterTile : public MapAdapter
+    class QMAPCONTROL_EXPORT MapAdapterRemote : public MapAdapter
     {
-        Q_OBJECT
     public:
         //! Constructor.
         /*!
          * This construct a MapAdapter for Tiled Map (Slippymap) services.
          * Sample of a correct initialization of a MapAdapter.
-         * std::shared_ptr<MapAdapterTile> mat(std::make_shared<MapAdapterTile>(QUrl("http://192.168.8.1/img/img_cache.php/%zoom/%x/%y.png"), ...));
+         * std::shared_ptr<MapAdapterTile> mat(std::make_shared<MapAdapterRemote>(QUrl("http://192.168.8.1/img/img_cache.php/%zoom/%x/%y.png"), ...));
          * The placeholders available are: %zoom, %x and %y.
          * @param base_url The base url of the map server.
          * @param epsg_projections The supported EPSG projections.
          * @param adapter_zoom_minimum The adapter's minimum zoom level available.
          * @param adapter_zoom_maximum The adapter'smaximum zoom level available.
-         * @param adapter_zoom_offset The initial offset from the controller zoom at level 0.
          * @param invert_y Whether the y-axis tile needs to be inverted (ie: y-axis tiles start at bottom-left, instead of top-left).
-         * @param parent QObject parent ownership.
          */
-        MapAdapterTile(const QUrl& base_url,
-                       const std::set<projection::EPSG>& epsg_projections,
-                       const int adapter_zoom_minimum = 0,
-                       const int adapter_zoom_maximum = kDefaultMaxZoom,
-                       const int adapter_minimum_offset = 0,
-                       const bool invert_y = false,
-                       QObject* parent = nullptr);
+
+        MapAdapterRemote(const QUrl& base_url,
+                         const std::set<projection::EPSG>& epsg_projections,
+                         const int adapter_zoom_minimum = 0,
+                         const int adapter_zoom_maximum = kDefaultMaxZoom,
+                         const bool invert_y = false);
+
+        MapAdapterRemote(const QUrl& base_url,
+                         const QString& sourceId);
 
         //! Disable copy constructor.
-        MapAdapterTile(const MapAdapterTile&) = delete;
+        MapAdapterRemote(const MapAdapterRemote&) = delete;
 
         //! Disable copy assignment.
-        MapAdapterTile& operator=(const MapAdapterTile&) = delete;
+        MapAdapterRemote& operator=(const MapAdapterRemote&) = delete;
 
         //! Destructor.
-        virtual ~MapAdapterTile() = default;
+        ~MapAdapterRemote() override = default;
+
+        /*!
+         * Get the base url.
+         * @return the base url.
+         */
+        QUrl getBaseUrl() const;
+
+        /*!
+         * Change the base url post-initialisation.
+         * @param base_url The new base url to set.
+         */
+        virtual void setBaseUrl(const QUrl& base_url);
 
         /*!
          * Generates the url required to fetch the image tile for the specified x, y and zoom.
@@ -80,10 +95,35 @@ namespace qmapcontrol
          * @param controller_zoom The current controller zoom.
          * @return the generated url.
          */
-        virtual QUrl tileQuery(const int x, const int y, const int controller_zoom) const override;
+        virtual QUrl tileQuery(const int x, const int y, const int controller_zoom) const;
+
+        /*!
+         * Source ID can be used to identify the tiles as coming from this adapter
+         * in caching or other uses.
+         */
+        QString sourceId() const override { return m_sourceId; }
+
+        /*!
+         * Sets available server parts, e.g. { "a", "b", "c" }
+         */
+        void setServerParts(const  QList<QUrl>& parts);
+
+        /*!
+         * Selects serverpart url
+         */
+        QUrl selectServerPart(int x, int y, int zoom) const;
 
     private:
+        /// The base url path of the map server.
+        QUrl m_base_url;
+        // List of server parts (optional)
+        QList<QUrl> m_serverParts;
+
         /// Whether the y-axis tile needs to be inverted (ie: y-axis tiles start at bottom-left, instead of top-left).
         const bool m_invert_y;
+    protected:
+        QString m_sourceId;
+
+        QPixmap getTileImageInternal(const int x, const int y, const int controller_zoom, bool prefetchOnly) const override;
     };
 }

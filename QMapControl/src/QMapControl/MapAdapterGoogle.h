@@ -27,20 +27,18 @@
 
 // Local includes.
 #include "qmapcontrol_global.h"
-#include "MapAdapterTile.h"
+#include "MapAdapterRemote.h"
 
 namespace qmapcontrol
 {
-    //! MapAdapter for Google.
     /*!
-     * This is a conveniece class, which extends and configures a MapAdapterTile.
+     * MapAdapter for Google.
      *
      * @author Kai Winter <kaiwinter@gmx.de>
      * @author Chris Stylianou <chris5287@gmail.com>
      */
-    class QMAPCONTROL_EXPORT MapAdapterGoogle : public MapAdapterTile
+    class QMAPCONTROL_EXPORT MapAdapterGoogle : public MapAdapterRemote
     {
-        Q_OBJECT
     public:
         /// Different Google layer types available.
         enum class GoogleLayerType
@@ -65,9 +63,8 @@ namespace qmapcontrol
         /*!
          * This construct a Google MapAdapter.
          * @param layer_type The Google layer type to display.
-         * @param parent QObject parent ownership.
          */
-        MapAdapterGoogle(const GoogleLayerType layer_type = GoogleLayerType::MAPS, QObject* parent = nullptr);
+        explicit MapAdapterGoogle(const GoogleLayerType layer_type = GoogleLayerType::MAPS);
 
         //! Disable copy constructor.
         MapAdapterGoogle(const MapAdapterGoogle&) = delete;
@@ -76,7 +73,7 @@ namespace qmapcontrol
         MapAdapterGoogle& operator=(const MapAdapterGoogle&) = delete;
 
         //! Destructor.
-        ~MapAdapterGoogle() = default;
+        ~MapAdapterGoogle() override = default;
 
     private:
         /*!

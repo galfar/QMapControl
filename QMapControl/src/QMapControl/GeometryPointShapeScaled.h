@@ -76,7 +76,7 @@ namespace qmapcontrol
         GeometryPointShapeScaled& operator=(const GeometryPointShapeScaled&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPointShapeScaled() = default;
+        ~GeometryPointShapeScaled() override = default;
 
     public:
         /*!
@@ -96,18 +96,17 @@ namespace qmapcontrol
 
         /*!
          * \brief setNonlinearZoomFactor Sets a nonlinear zoom factor for the shape
-         *
+         * \param factor The factor
          * Normally, and by default, this factor is set to 1.0, so zooming in one steps doubles the size of the shape.
          * User can control this, for example, to prevent zooming out to make shape disappear too fast.
          * Use factor < 1.0 to rescale slower than zoom, > 1.0 to rescale faster.
-         * \param factor
          */
         void setNonlinearZoomFactor(double factor);
 
         /*!
          * \brief getNonlinearZoomFactor Returns the current nonlinear zoom factor of the shape.
          * \seealso setNonlinearZoomFactor
-         * \return
+         * \return zoom factor
          */
         double getNonlinearZoomFactor () const;
 
@@ -120,7 +119,7 @@ namespace qmapcontrol
         /*!
          * Set the minimum size a shape can be drawn.
          * Set to 'QSizeF(-1.0, -1.0)' to disable the limitation.
-         * @param size The minimum size to draw a shape.
+         * @param size_px The minimum size to draw a shape.
          */
         void setDrawMinimumPx(const QSizeF& size_px = QSizeF(-1.0, -1.0));
 
@@ -151,7 +150,7 @@ namespace qmapcontrol
          * @param backbuffer_rect_coord Only draw geometries that are contained in the backbuffer rect (world coordinates).
          * @param controller_zoom The current controller zoom.
          */
-        void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom);
+        void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom) override;
 
     private:
         /*!
@@ -165,7 +164,7 @@ namespace qmapcontrol
         /*!
          * \brief drawShape Draws the shape in a transformed painter according to zoom/translate/rotate status
          * A derived class must implement this method
-         * \param painter
+         * \param painter The painter
          * \param rect The rect in pixel coordinates
          */
         virtual void drawShape(QPainter &painter, const RectWorldPx &rect) = 0;

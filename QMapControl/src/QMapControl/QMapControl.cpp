@@ -35,7 +35,6 @@
 
 // Local includes.
 #include "GeometryLineString.h"
-#include "GeometryPoint.h"
 #include "GeometryPolygon.h"
 #include "ImageManager.h"
 #include "LayerGeometry.h"
@@ -63,11 +62,9 @@ namespace qmapcontrol
           m_layer_mouse_events_enabled(true),
           m_viewport_size_px(size_px),
           m_viewport_center_px(size_px.width() / 2.0, size_px.height() / 2.0),
-          m_limited_viewport_rect_coord(PointWorldCoord(0.0, 0.0), PointWorldCoord(0.0, 0.0)),
           m_map_focus_coord(0.0, 0.0),
-          m_animated_map_focus_point(0.0, 0.0),
-          m_animated_steps(0),
-          m_animated_interval(0),
+          m_followGeometryHelper(this),
+          m_animationHelper(this),
           m_zoom_minimum(0),
           m_zoom_maximum(kDefaultMaxZoom),
           m_current_zoom(m_zoom_minimum),
@@ -81,21 +78,32 @@ namespace qmapcontrol
           m_mouse_position_current_px(0.0, 0.0),
           m_primary_screen_map_focus_point_px(0.0, 0.0),
           m_primary_screen_backbuffer_rect_px(PointWorldPx(0.0, 0.0), PointWorldPx(0.0, 0.0)),
-          m_primary_screen_scaled_enabled(false),
-          m_primary_screen_scaled_offset(0.0, 0.0),
           m_progress_indicator(this),
           m_backgroundColor(Qt::transparent),
           m_redrawsEnabled(redrawsEnabled)
     {
+        // a dummy creation to be able to track the widget allocations
+        // actually the first one will create the singleton
+        ImageManager::create();
+
         // Register meta types.
         qRegisterMetaType<RectWorldPx>("RectWorldPx");
         qRegisterMetaType<PointWorldPx>("PointWorldPx");
 
         // Connect signal/slot for when the backbuffer is updated, so that primary screen is updated in the main thread.
-        QObject::connect(this, &QMapControl::updatedBackBuffer, this, &QMapControl::updatePrimaryScreen);
+        QObject::connect(this, &QMapControl::updatedBackBuffer, this, &QMapControl::updatePrimaryScreen, Qt::QueuedConnection);
 
         // Connect signals from the Image Manager.
         QObject::connect(&ImageManager::get(), &ImageManager::imageUpdated, this, &QMapControl::requestRedraw);
+        QObject::connect(&ImageManager::get(), &ImageManager::tileDownloadSucceeded,
+                         this, [this](TileDescriptor /*unused*/, RequestPurpose /*unused*/)
+                                      { if (!m_canPullTiles)
+                                          {
+                                              m_canPullTiles = true;
+                                              emit connectivityChanged(m_canPullTiles);
+                                          }
+                                      });
+        QObject::connect(&ImageManager::get(), &ImageManager::tileDownloadFailed, this, &QMapControl::handleDownloadFailure);
         QObject::connect(&ImageManager::get(), &ImageManager::downloadingFinished, this, &QMapControl::loadingFinished);
 
         // Default - allow the map to gain click focus.
@@ -110,7 +118,12 @@ namespace qmapcontrol
 
     QMapControl::~QMapControl()
     {
-        // Destroy the image manager instance.
+        QMAP_DBG() << "Destroy QMapControl";
+        setRedrawsEnabled(false);
+        waitForBackgroundRedrawFinished();
+
+        // a dummy destroy to be able to track the widget allocations
+        // actually the last one will delete the singleton
         ImageManager::destroy();
     }
 
@@ -119,12 +132,6 @@ namespace qmapcontrol
     void QMapControl::setBackgroundColour(const QColor& colour)
     {
         m_backgroundColor = colour;
-    }
-
-    void QMapControl::enableScaledBackground(const bool visible)
-    {
-        // Set whether the scaled primary screen should be visible as a background image.
-        m_primary_screen_scaled_enabled = visible;
     }
 
     void QMapControl::enableScalebar(const bool visible)
@@ -139,10 +146,27 @@ namespace qmapcontrol
         m_crosshairs_enabled = visible;
     }
 
-    void QMapControl::enableRedraws(bool enabled)
+    void QMapControl::setRedrawsEnabled(bool enabled)
     {
+        QMAP_DBG() << "Redraws " << (enabled ? "enabled" : "disabled");
+        if (m_redrawsEnabled == enabled) {
+            // No need to redraw if it was already enabled
+            return;
+        }
+
         m_redrawsEnabled = enabled;
-        emit requestRedraw();
+        if (m_redrawsEnabled) {
+            requestRedraw();
+        }
+    }
+
+    void QMapControl::setBackBufferScaleFactor(double factor /* = 2.0*/) {
+        // cannot be smaller than viewport
+        if (factor < 1.0) {
+            factor = 1.0;
+        }
+        m_backBufferScaleFactor = factor;
+        // start enlarged/smaller backbuffer
     }
 
     void QMapControl::enableProgressIndicator(bool enabled) {
@@ -292,41 +316,26 @@ namespace qmapcontrol
 
     void QMapControl::followGeometry(const std::shared_ptr<Geometry> geometry)
     {
-        // Check the geometry is valid.
-        if (geometry != nullptr)
-        {
-            // Remove any previous geometry following.
-            stopFollowingGeometry();
-
-            // Connect the position changed of the geometry to the controller.
-            m_following_geometry = QObject::connect(geometry.get(), &Geometry::positionChanged, this, &QMapControl::geometryPositionChanged);
-        }
+        m_followGeometryHelper.followGeometry(geometry.get());
     }
 
     void QMapControl::stopFollowingGeometry()
     {
-        // Disconnect the signal/slot updates.
-        QObject::disconnect(m_following_geometry);
+        m_followGeometryHelper.stopFollowingGeometry();
     }
 
     // Viewport management.
     void QMapControl::setViewportSize(const QSize& size_px)
     {
-        // Set the inherited QWidget maximum size.
-        QWidget::setMaximumSize(size_px.width() + 1, size_px.height() + 1);
-
         // Set the size of the viewpoint (visible-part of the layer) in pixels.
         m_viewport_size_px = size_px;
 
         // Calculate the middle point of the viewport (visible-part of the layer) in pixels.
         m_viewport_center_px = PointViewportPx(m_viewport_size_px.width() / 2.0, m_viewport_size_px.height() / 2.0);
 
-        // Create new pixmaps with the new size required (2 x viewport size to allow for panning backbuffer).
-        m_primary_screen = QPixmap(m_viewport_size_px * 2);
+        // Create new pixmaps with the new size required (m_areaCachingFactor x viewport size to allow for panning backbuffer).
+        m_primary_screen = QPixmap(m_viewport_size_px * m_backBufferScaleFactor);
         m_primary_screen.fill(kInitialBufferColor);
-        m_primary_screen_scaled = QPixmap(m_viewport_size_px * 2);
-        m_primary_screen_scaled.fill(Qt::transparent);
-        m_primary_screen_scaled_offset = PointPx(0.0, 0.0);
 
         // Force the primary screen to be redrawn.
         redrawPrimaryScreen(true);
@@ -338,7 +347,9 @@ namespace qmapcontrol
     RectWorldCoord QMapControl::getViewportRect() const
     {
         // Return the viewport rect converted into the coordinates system.
-        return RectWorldCoord(projection::get().toPointWorldCoord(mapFocusPointWorldPx() - m_viewport_center_px, m_current_zoom), projection::get().toPointWorldCoord(mapFocusPointWorldPx() + m_viewport_center_px, m_current_zoom));
+        return RectWorldCoord(
+                    projection::get().toPointWorldCoord(mapFocusPointWorldPx() - m_viewport_center_px, m_current_zoom),
+                    projection::get().toPointWorldCoord(mapFocusPointWorldPx() + m_viewport_center_px, m_current_zoom));
     }
 
     bool QMapControl::viewportContainsAll(const std::vector<PointWorldCoord>& points_coord,
@@ -363,18 +374,6 @@ namespace qmapcontrol
         return return_contains_all;
     }
 
-    void QMapControl::resetLimitedViewportRect()
-    {
-        // Reset limited viewport rect to 0 (ie: disable it).
-        m_limited_viewport_rect_coord = RectWorldCoord(PointWorldCoord(0.0, 0.0), PointWorldCoord(0.0, 0.0));
-    }
-
-    void QMapControl::setLimitedViewportRect(const PointWorldCoord& top_left_coord, const PointWorldCoord& bottom_right_coord)
-    {
-        // Set the limited viewport rect.
-        m_limited_viewport_rect_coord = RectWorldCoord(top_left_coord, bottom_right_coord);
-    }
-
     // Map management.
     PointWorldCoord QMapControl::mapFocusPointCoord() const
     {
@@ -388,9 +387,7 @@ namespace qmapcontrol
         m_map_focus_coord = point_coord;
 
         emit mapFocusPointChanged(m_map_focus_coord);
-
-        // Request the primary screen to be redrawn.
-        redrawPrimaryScreen();
+        redrawPrimaryScreen(false);
     }
 
     void QMapControl::setMapFocusPoint(const std::vector<PointWorldCoord>& points_coord,
@@ -430,26 +427,7 @@ namespace qmapcontrol
 
     void QMapControl::setMapFocusPointAnimated(const PointWorldCoord& coordinate, const int steps, const std::chrono::milliseconds& step_interval)
     {
-        // Is animation already taking place?
-        if (m_animated_mutex.tryLock())
-        {
-            // Set the new map focus point to scroll to.
-            m_animated_map_focus_point = coordinate;
-
-            // Set the number of steps it should take.
-            m_animated_steps = steps;
-
-            // Set the interval between each step.
-            m_animated_interval = step_interval;
-
-            // Set the animation tick to start.
-            QTimer::singleShot(int(m_animated_interval.count()), this, &QMapControl::animatedTick);
-        }
-        else
-        {
-            // Warn that we cannot animate as we are already mid-animating.
-            qDebug() << "Unable to animate to new map focus, already animating!";
-        }
+        m_animationHelper.setMapFocusPointAnimated(coordinate, steps, step_interval);
     }
 
     void QMapControl::scrollViewLeft(const double delta_px)
@@ -495,10 +473,14 @@ namespace qmapcontrol
         checkZoom();
     }
 
-    int QMapControl::getCurrentZoom() const
+    void QMapControl::setZoomMinMax(const int zoom_minimum, const int zoom_maximum)
     {
-        // Return the zoom.
-        return m_current_zoom;
+        // Set the new zoom minimum and maximum.
+        m_zoom_minimum = zoom_minimum;
+        m_zoom_maximum = zoom_maximum;
+
+        // Check the zoom.
+        checkZoom();
     }
 
     // Mouse management.
@@ -783,13 +765,13 @@ namespace qmapcontrol
             if (m_current_zoom < m_zoom_maximum)
             {
                 // Capture the current wheel point at the current zoom level.
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                const PointViewportPx wheel_px(wheel_event->position().x(), wheel_event->position().y());
+#else
                 const PointViewportPx wheel_px(wheel_event->posF().x(), wheel_event->posF().y());
+#endif
                 const PointWorldCoord wheel_coord(toPointWorldCoord(wheel_px));
                 const PointPx wheel_delta(mapFocusPointWorldPx() - toPointWorldPx(wheel_px));
-
-                // Update the scaled offset with the current wheel_delta.
-                /// @TODO should this add to the offset?
-                m_primary_screen_scaled_offset = wheel_delta;
 
                 // Zoom in.
                 zoomIn();
@@ -812,14 +794,13 @@ namespace qmapcontrol
             if (m_current_zoom > m_zoom_minimum)
             {
                 // Capture the current wheel point at the current zoom level.
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+                const PointViewportPx wheel_px(wheel_event->position().x(), wheel_event->position().y());
+#else
                 const PointViewportPx wheel_px(wheel_event->posF().x(), wheel_event->posF().y());
+#endif
                 const PointWorldCoord wheel_coord(toPointWorldCoord(wheel_px));
                 const PointPx wheel_delta(mapFocusPointWorldPx() - toPointWorldPx(wheel_px));
-
-                // Update the scaled offset with the current wheel_delta.
-                /// @TODO should this add to the offset?
-                /// @TODO not sure if this is correct delta to apply on zoom out!
-                m_primary_screen_scaled_offset = wheel_delta;
 
                 // Zoom out.
                 zoomOut();
@@ -883,86 +864,26 @@ namespace qmapcontrol
     }
 
     // Drawing management.
-    QPixmap QMapControl::getPrimaryScreen() const
+    RectViewportPx QMapControl::primaryScreenRect() const
     {
-        // Return the primary screen (ie: what is currently being displayed).
-        // Note: m_viewport_center_px is the same as (m_viewport_size_px / 2)
-        return m_primary_screen.copy(QRect((m_viewport_center_px + mapFocusPointWorldPx() - m_primary_screen_map_focus_point_px).rawPoint().toPoint(), m_viewport_size_px));
+        // relative offset between backbuffer and viewport
+        const PointViewportPx backbuffer_offset_px((m_primary_screen.width() - m_viewport_size_px.width()) / 2.0,
+                                                   (m_primary_screen.height() - m_viewport_size_px.height()) / 2.0);
+        // apply relative shift between focus points
+        return RectViewportPx(backbuffer_offset_px + mapFocusPointWorldPx() - m_primary_screen_map_focus_point_px,
+                              m_viewport_size_px);
     }
-
 
     /// Public slots...
     // Zoom management.
     void QMapControl::zoomIn()
     {
-        // Check the current zoom is less than the maximum zoom
-        if (m_current_zoom < m_zoom_maximum)
-        {
-            // Cancel existing image loading.
-            ImageManager::get().abortLoading();
-
-            /// @TODO Could we cancel current layer drawing as well?
-
-            // Is the primary screen scaled enabled?
-            if (m_primary_screen_scaled_enabled)
-            {
-                // Paint the primary screen to the scaled screen with a scale.
-                QPixmap new_primary_screen_scaled(m_viewport_size_px * 2);
-                new_primary_screen_scaled.fill(Qt::transparent);
-                QPainter painter(&new_primary_screen_scaled);
-                painter.scale(2, 2);
-                painter.drawPixmap(PointWorldPx(0.0, 0.0).rawPoint(), getPrimaryScreen());
-
-                // Store the new scaled primary screen.
-                m_primary_screen_scaled = new_primary_screen_scaled;
-            }
-
-            // Reset the primary screen, as this is invalid.
-            //m_primary_screen.fill(kInitialBufferColor);
-
-            // Increase the zoom!
-            m_current_zoom++;
-            emit zoomChanged();
-
-            // Force the primary screen to be redrawn.
-            redrawPrimaryScreen(true);
-        }
+        setZoom(m_current_zoom + 1);
     }
 
     void QMapControl::zoomOut()
     {
-        // Check the current zoom is greater than the minimum zoom.
-        if (m_current_zoom > m_zoom_minimum)
-        {
-            // Cancel existing image loading.
-            ImageManager::get().abortLoading();
-
-            /// @TODO Could we cancel current layer drawing as well?
-
-            // Is the primary screen scaled enabled?
-            if (m_primary_screen_scaled_enabled)
-            {
-                // Paint the primary screen to the scaled screen with a scale.
-                QPixmap new_primary_screen_scaled(m_viewport_size_px * 2.0);
-                new_primary_screen_scaled.fill(Qt::transparent);
-                QPainter painter(&new_primary_screen_scaled);
-                painter.scale(0.5, 0.5);
-                painter.drawPixmap(PointWorldPx(m_viewport_size_px.width(), m_viewport_size_px.height()).rawPoint(), m_primary_screen);
-
-                // Store the new scaled primary screen.
-                m_primary_screen_scaled = new_primary_screen_scaled;
-            }
-
-            // Reset the primary screen, as this is invalid.
-           // m_primary_screen.fill(kInitialBufferColor);
-
-            // Decrease the zoom!
-            m_current_zoom--;
-            emit zoomChanged();
-
-            // Force the primary screen to be redrawn.
-            redrawPrimaryScreen(true);
-        }
+        setZoom(m_current_zoom - 1);
     }
 
     void QMapControl::setZoom(int zoom)
@@ -982,43 +903,19 @@ namespace qmapcontrol
         // Check the requested zoom isn't already the current zoom.
         if (m_current_zoom != zoom)
         {
-            if (m_redrawsEnabled && m_primary_screen_scaled_enabled)
-            {
-                // Is the required zoom less than current zoom?
-                if (m_current_zoom > zoom)
-                {
-                    if (m_primary_screen_scaled_enabled) {
-                        // Keep zooming out until zoom == current zoom.
-                        for (int i = m_current_zoom; i > zoom; i--)
-                        {
-                            zoomOut();
-                        }
-                    } else {
+            // Cancel existing image loading.
+            ImageManager::get().abortLoading();
 
-                    }
-                }
-                else
-                {
-                    // Keep zooming in until zoom == current zoom.
-                    for (int i = m_current_zoom; i < zoom; i++)
-                    {
-                        zoomIn();
-                    }
-                }
-            } else {
-                // Cancel existing image loading.
-                ImageManager::get().abortLoading();
+            /// @TODO Could we cancel current layer drawing as well?
+            // Reset the primary screen, as this is invalid.
+            //m_primary_screen.fill(kInitialBufferColor);
 
-                /// @TODO Could we cancel current layer drawing as well?
-                // Reset the primary screen, as this is invalid.
-                //m_primary_screen.fill(kInitialBufferColor);
+            m_current_zoom = zoom;
 
-                m_current_zoom = zoom;
-                emit zoomChanged();
-
-                // Force the primary screen to be redrawn.
-                redrawPrimaryScreen(true);
-            }
+            bool redrawsEnabled = m_redrawsEnabled;
+            setRedrawsEnabled(false);
+            emit zoomChanged();
+            setRedrawsEnabled(redrawsEnabled);
         }
     }
 
@@ -1027,6 +924,12 @@ namespace qmapcontrol
     {
         // Force the primary screen to be redrawn.
         redrawPrimaryScreen(true);
+    }
+
+    void QMapControl::waitForBackgroundRedrawFinished()
+    {
+        m_futureSync.waitForFinished();
+        m_futureSync.clearFutures();
     }
 
 
@@ -1101,19 +1004,13 @@ namespace qmapcontrol
     {
         // Calculate the new map focus coord.
         const PointWorldCoord new_map_focus_coord(projection::get().toPointWorldCoord(mapFocusPointWorldPx() + delta_px, m_current_zoom));
-
-        // If no limited viewport is set, or if the new map focus point coord is within the limited viewport...
-        if (m_limited_viewport_rect_coord.rawRect().isNull() || (m_limited_viewport_rect_coord.rawRect().isValid() && m_limited_viewport_rect_coord.rawRect().contains(new_map_focus_coord.rawPoint())))
-        {
-            // Update map focus point with delta.
-            setMapFocusPoint(new_map_focus_coord);
-        }
+        setMapFocusPoint(new_map_focus_coord);
     }
 
     // Zoom management.
     void QMapControl::checkZoom()
     {
-        Q_ASSERT(m_zoom_maximum > m_zoom_minimum);
+        Q_ASSERT(m_zoom_maximum >= m_zoom_minimum);
 
         // Check the current zoom is not outside the zoom range.
         if (m_current_zoom < m_zoom_minimum)
@@ -1144,6 +1041,8 @@ namespace qmapcontrol
     // Drawing management.
     void QMapControl::paintEvent(QPaintEvent* paint_event)
     {
+        DBG_SLEEP(m_viewport_size_px.width() * m_viewport_size_px.height() / 100000 + 1);
+
         // Call inherited QWidgets paint event first.
         QWidget::paintEvent(paint_event);
 
@@ -1159,12 +1058,14 @@ namespace qmapcontrol
         // Draw the current primary screen to the widget.
         drawPrimaryScreen(&painter);
 
+#if QMAP_DEBUG
         // Draw a box around the edge of the viewport (useful for debugging).
         painter.save();
         painter.setRenderHints(QPainter::Antialiasing, false);
         painter.setPen(QColor(60, 60, 60, 200));
         painter.drawRect(RectViewportPx(PointViewportPx(0.0, 0.0), PointViewportPx(m_viewport_size_px.width() - 1, m_viewport_size_px.height() - 1)).rawRect());
         painter.restore();
+#endif
 
         // Should we draw the scalebar?
         if (m_scalebar_enabled)
@@ -1314,21 +1215,8 @@ namespace qmapcontrol
 
     void QMapControl::drawPrimaryScreen(QPainter* painter) const
     {
-        QPointF topLeft;
-
-        // Is the primary screen scaled enabled?
-        if (m_primary_screen_scaled_enabled)
-        {
-            // Draw the current scaled primary screem image to the pixmap with wheel event offset.
-            // Note: m_viewport_center_px is the same as (m_viewport_size_px / 2)
-            topLeft = -(m_viewport_center_px + mapFocusPointWorldPx() - m_primary_screen_map_focus_point_px - m_primary_screen_scaled_offset).rawPoint();
-            painter->drawPixmap(topLeft, m_primary_screen_scaled);
-        }
-
         // Draws the primary screen image to the pixmap.
-        // Note: m_viewport_center_px is the same as (m_viewport_size_px / 2)
-        topLeft = -(m_viewport_center_px + mapFocusPointWorldPx() - m_primary_screen_map_focus_point_px).rawPoint();
-        painter->drawPixmap(topLeft, m_primary_screen);
+        painter->drawPixmap(-(primaryScreenRect().topLeftPx().rawPoint()), m_primary_screen);
     }
 
     bool QMapControl::checkBackbuffer() const
@@ -1336,8 +1224,17 @@ namespace qmapcontrol
         // Default return success.
         bool return_redraw_required(false);
 
+        // with 0.0 the test will be done on the exact boundary,
+        // with > 0.0 it enlarges the required rectangle so it will trigger slightly before the hard boundary
+        // this helps with blinking on borders while panning
+        const float MARGIN = 0.02f;
+        const int xOffs = (int)(m_viewport_size_px.width() * MARGIN);
+        const int yOffs = (int)(m_viewport_size_px.height() * MARGIN);
+
         // Calculate required viewport rect.
-        const RectWorldPx required_viewport_rect_px(toPointWorldPx(PointViewportPx(0.0, 0.0)), toPointWorldPx(PointViewportPx(m_viewport_size_px.width(), m_viewport_size_px.height())));
+        const RectWorldPx required_viewport_rect_px(toPointWorldPx(PointViewportPx(0.0 - xOffs, 0.0 - yOffs)),
+                                                    toPointWorldPx(PointViewportPx(m_viewport_size_px.width() + xOffs,
+                                                                                   m_viewport_size_px.height() + yOffs)));
 
         // Does the primary screen's backbuffer rect contain the requried viewport rect?
         if (m_primary_screen_backbuffer_rect_px.rawRect().contains(required_viewport_rect_px.rawRect()) == false)
@@ -1359,12 +1256,43 @@ namespace qmapcontrol
         // If we are forced to redraw, or current backbuffer does not cover the required viewport.
         if (force_redraw || checkBackbuffer())
         {
-            // Schedule the redraw in a background thread.
-            QtConcurrent::run(this, &QMapControl::redrawBackbuffer);
+            // Get access to the backbuffer's queue mutex.
+            // Drops redraw requests if there's one already pending
+            // Doing this here protects rogue redraw requests filling huge amounts of futures
+            // this can happen for example when lot of tiles are loaded and updated at once
+            if (m_backbuffer_queued_mutex.tryLock())
+            {
+
+                // As QFutureSynchronizer does not have "removeFuture" and only clear()
+                // we need to check if all are finished and clear() only in this case.
+                bool allDone = true;
+                const auto futures = m_futureSync.futures();
+                for (const auto& future : qAsConst(futures))
+                {
+                    // isRunning() alone can mean that the thread was not even started
+                    // so we also test the isStarted()
+                    if (future.isRunning() && future.isStarted())
+                    {
+                        allDone = false;
+                        break;
+                    }
+                }
+                if (allDone)
+                {
+                    m_futureSync.clearFutures();
+                }
+
+                // Schedule the redraw in a background thread.
+                auto future = QtConcurrent::run(this, &QMapControl::redrawBackbuffer);
+                m_futureSync.addFuture(future);
+            } else {
+                QMAP_DBG() << "Redraw request dropped (already pending)";
+            }
         }
 
         // Loop through the layers to update the Geometries that have widgets as well.
-        for (const auto& layer : getLayers())
+        const auto layers = getLayers();
+        for (const auto& layer : qAsConst(layers))
         {
             // Is it a geometry layer?
             if (layer->getLayerType() == Layer::LayerType::LayerGeometry)
@@ -1380,8 +1308,11 @@ namespace qmapcontrol
 
     void QMapControl::redrawBackbuffer()
     {
-        // Get access to the backbuffer's queue mutex.
+        // Queue should be already locked
         if (m_backbuffer_queued_mutex.tryLock())
+        {
+            qWarning() << "Queue unlocked???";
+        }
         {
             // Get access to the backbuffer mutex.
             QMutexLocker locker(&m_backbuffer_mutex);
@@ -1389,12 +1320,33 @@ namespace qmapcontrol
             // Release the backbuffer queue mutex, so someone else can wait while we redraw.
             m_backbuffer_queued_mutex.unlock();
 
-            // Start the progress indicator as we are going to start the redrawing process
-            QTimer::singleShot(0, &m_progress_indicator, &QProgressIndicator::startAnimation);
+            if (m_progress_indicator.isVisible()) {
+                // Start the progress indicator as we are going to start the redrawing process
+                QTimer::singleShot(0, &m_progress_indicator, &QProgressIndicator::startAnimation);
+            }
 
-            // Generate a new backbuffer (2 x viewport size to allow for panning backbuffer).
+            // Create a safe local copy of the LAST m_viewport_size_px.
+            // Since redrawBackbuffer runs in a thread the m_viewport_size_px can change in the main thread,
+            // while the redrawBackbuffer is waiting in the queue.
+            // This is NEEDED, because we will drop any subsequent update requests, but we need to render
+            // the last requested size.
+            QSize viewport_size_px;
+            // Scope the locker to ensure the mutex is release as soon as possible.
+            {
+                // Gain a read lock to protect the m_viewport_size_px
+                // we are just reusing the m_layers_mutex
+                QReadLocker read_locker(&m_layers_mutex);
+                viewport_size_px = m_viewport_size_px;
+            }
+
+            QSize backbuffer_size_px = m_viewport_size_px * m_backBufferScaleFactor;
+
+            DBG_SLEEP(viewport_size_px.width() * viewport_size_px.height() / 10000 + 100);
+            QMAP_DBG() << "Backbuffer update: " << backbuffer_size_px;
+
+            // Generate a new backbuffer (m_areaCachingFactor x viewport size to allow for panning backbuffer).
             // Needs to be created in the current thread or QPainter burns down.
-            QPixmap image_backbuffer(m_viewport_size_px * 2);
+            QPixmap image_backbuffer(backbuffer_size_px);
 
             // Clear the backbuffer.
             image_backbuffer.fill(kInitialBufferColor);
@@ -1406,104 +1358,78 @@ namespace qmapcontrol
             PointWorldPx backbuffer_map_focus_px(mapFocusPointWorldPx());
 
             // Calculate the new backbuffer rect (based on the saved backbuffer map focus point).
-            // Note: m_viewport_center_px is the same as (m_viewport_size_px / 2)
-            const PointPx viewport_offset_px(m_viewport_size_px.width() / 2.0, m_viewport_size_px.height() / 2.0);
-            const RectWorldPx backbuffer_rect_px(toPointWorldPx(PointViewportPx(0, 0) - viewport_offset_px, backbuffer_map_focus_px), toPointWorldPx(PointViewportPx(m_viewport_size_px.width(), m_viewport_size_px.height()) + viewport_offset_px, backbuffer_map_focus_px));
+            const PointPx viewport_offset_px((backbuffer_size_px.width() - m_viewport_size_px.width())/ 2.0,
+                                             (backbuffer_size_px.height() - m_viewport_size_px.height())/ 2.0);
+
+            const PointViewportPx top_left(PointViewportPx(0, 0) - viewport_offset_px);
+            const PointViewportPx bottom_right(PointViewportPx(m_viewport_size_px.width(),
+                                                         m_viewport_size_px.height()) + viewport_offset_px);
+            const RectWorldPx backbuffer_rect_px(toPointWorldPx(top_left, backbuffer_map_focus_px),
+                                                 toPointWorldPx(bottom_right, backbuffer_map_focus_px));
 
             // Translate to the backbuffer top/left point.
             painter_back_buffer.translate(-backbuffer_rect_px.topLeftPx().rawPoint());
 
-            // Gain a read lock to protect the layers container.
-            QReadLocker read_locker(&m_layers_mutex);
-
-            // Loop through each layer and draw it to the backbuffer.
-            for (std::shared_ptr<Layer> layer : m_layers)
+            // Scope the locker to ensure the mutex is release as soon as possible.
             {
-                // Draw the layer to the backbuffer.
-                layer->draw(painter_back_buffer, backbuffer_rect_px, m_current_zoom);
-            }
+                // Gain a read lock to protect the layers container.
+                QReadLocker read_locker(&m_layers_mutex);
 
-            read_locker.unlock();
+                // Loop through each layer and draw it to the backbuffer.
+                // Note: this has a throwback:
+                // if multiple map layers (LayerMapAdapter) are present
+                // it fully redraws n times all the layers
+                // but eventualy only the topmost is relevant and visible
+                // Note 2: to fix this do NOT use the encoded area of the geopackage
+                // as it is only metadata and a lot of times it's not representing the reality
+                // A lot better approach is to test the ImageManager::emptyPixmapCacheKey()
+                for (const std::shared_ptr<Layer>& layer : m_layers)
+                {
+                    // Draw the layer to the backbuffer.
+                    layer->draw(painter_back_buffer, backbuffer_rect_px, m_current_zoom);
+                }
+            }
 
             // Undo the backbuffer top/left point translation.
             painter_back_buffer.translate(backbuffer_rect_px.topLeftPx().rawPoint());
 
             // Inform the main thread that we have a new backbuffer.
-            emit updatedBackBuffer(image_backbuffer, backbuffer_rect_px, backbuffer_map_focus_px);
+            emit updatedBackBuffer(image_backbuffer, viewport_size_px, backbuffer_rect_px, backbuffer_map_focus_px);
 
             // Stop the progress indicator as we have finished the redrawing process.
             QTimer::singleShot(0, &m_progress_indicator, &QProgressIndicator::stopAnimation);
         }
     }
 
-
     /// Private slots...
-    // Geometry management.
-    void QMapControl::geometryPositionChanged(const Geometry* geometry)
-    {
-        // Is it a point geometry?
-        if (geometry->geometryType() == Geometry::GeometryType::GeometryPoint)
-        {
-            // Calculate the delta between the current map focus and the new geometry position.
-            const PointWorldPx start_px(projection::get().toPointWorldPx(m_map_focus_coord, m_current_zoom));
-            const PointWorldPx dest_px(projection::get().toPointWorldPx(static_cast<const GeometryPoint*>(geometry)->coord(), m_current_zoom));
-            const PointPx delta_px(dest_px - start_px);
-
-            // Scroll the view
-            scrollView(delta_px);
-
-            // Force the primary screen to be redrawn.
-            redrawPrimaryScreen(true);
-        }
-    }
-
-    // Map management.
-    void QMapControl::animatedTick()
-    {
-        // Do we still have steps to complete?
-        if (m_animated_steps > 0)
-        {
-            // Calculate the delta between the current map focus and the target animated map focus point.
-            const PointWorldPx start_px(projection::get().toPointWorldPx(m_map_focus_coord, m_current_zoom));
-            const PointWorldPx dest_px(projection::get().toPointWorldPx(m_animated_map_focus_point, m_current_zoom));
-            const PointPx delta_px(dest_px - start_px);
-
-            // Scroll to the next point in the step.
-            scrollView(delta_px / m_animated_steps);
-
-            // Reduce the number of steps left.
-            m_animated_steps--;
-
-            // Schedule the next animation tick.
-            QTimer::singleShot(int(m_animated_interval.count()), this, &QMapControl::animatedTick);
-        }
-        else
-        {
-            // We have finished our animation, unlock the mutex.
-            m_animated_mutex.unlock();
-        }
-    }
-
     // Drawing management.
     void QMapControl::loadingFinished()
     {
-        if (m_primary_screen_scaled_enabled)
-        {
-            // Remove the scaled image, as all new images have been loaded.
-            m_primary_screen_scaled.fill(Qt::transparent);
-
-            // Reset the scaled image offset.
-            m_primary_screen_scaled_offset = PointPx(0.0, 0.0);
-        }
-
         // Request the primary screen to be redrawn.
         redrawPrimaryScreen();
     }
 
+    void QMapControl::handleDownloadFailure(TileDescriptor coord, Failure failure, RequestPurpose purpose)
+    {
+        Q_UNUSED(coord);
+        if ((purpose == RequestPurpose::Display || purpose == RequestPurpose::Prefetch)
+              && (failure == Failure::CantConnect || failure == Failure::ContentDenied))
+        {
+            if (m_canPullTiles)
+            {
+                m_canPullTiles = false;
+                emit connectivityChanged(m_canPullTiles);
+            }
+        }
+    }
+
     void QMapControl::updatePrimaryScreen(const QPixmap& backbuffer_pixmap,
+                                          const QSize& update_viewport_size_px,
                                           const RectWorldPx& backbuffer_rect_px,
                                           const PointWorldPx& backbuffer_map_focus_px)
     {
+        QMAP_DBG() << "Primary Screen Update";
+
         // Backbuffer image is ready, save it to the primary screen.
         m_primary_screen = backbuffer_pixmap;
 
@@ -1515,5 +1441,13 @@ namespace qmapcontrol
 
         // Schedule a repaint.
         QWidget::update();
+
+        // emit only when we are processing the last one
+        // e.g. no more queue
+        if (m_backbuffer_queued_mutex.tryLock()) {
+            QMAP_DBG() << "emit frontBufferUpdated() " << update_viewport_size_px << "  " << m_viewport_size_px;
+            m_backbuffer_queued_mutex.unlock();
+            emit frontBufferUpdated(update_viewport_size_px);
+        }
     }
 }

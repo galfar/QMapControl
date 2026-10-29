@@ -50,7 +50,7 @@ namespace qmapcontrol
         ProjectionEquirectangular& operator=(const ProjectionEquirectangular&) = delete;
 
         //! Destructor.
-        ~ProjectionEquirectangular() = default;
+        ~ProjectionEquirectangular() override = default;
 
         /*!
          * The number of tiles on the x-axis for a given zoom.

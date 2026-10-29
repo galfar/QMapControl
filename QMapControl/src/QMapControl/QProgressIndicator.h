@@ -52,7 +52,7 @@ public:
     QProgressIndicator& operator=(const QProgressIndicator&);
 
     //! Destructor.
-    ~QProgressIndicator() = default;
+    ~QProgressIndicator() override = default;
 
     /*!
      * Returns the delay between animation steps.

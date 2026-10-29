@@ -69,7 +69,7 @@ namespace qmapcontrol
         GeometryPointShape& operator=(const GeometryPointShape&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPointShape() = default;
+        ~GeometryPointShape() override = default;
     public:
         /*!
          * Sets the pen to draw the shape with (outline).
@@ -141,7 +141,7 @@ namespace qmapcontrol
          * @param controller_zoom The current controller zoom.
          * @return the bounding box.
          */
-        virtual RectWorldCoord boundingBox(const int controller_zoom) const override;
+        RectWorldCoord boundingBox(const int controller_zoom) const override;
 
     protected:
         /*!

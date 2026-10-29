@@ -64,13 +64,13 @@ namespace qmapcontrol
         GeometryLineString& operator=(const GeometryLineString&) = delete;
 
         //! Destructor.
-        virtual ~GeometryLineString() = default;
+        ~GeometryLineString() override = default;
 
         /*!
          * Fetches the list of points that form a line.
          * @return the list of points that form a line.
          */
-        std::vector<PointWorldCoord> points() const;
+        const std::vector<PointWorldCoord>& points() const;
 
         /*!
          * Add a point to the end of the line.
@@ -106,7 +106,7 @@ namespace qmapcontrol
          * @param backbuffer_rect_coord Only draw geometries that are contained in the backbuffer rect (world coordinates).
          * @param controller_zoom The current controller zoom.
          */
-        void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom);
+        void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom) override;
 
     private:
         /// The points that the linestring is made up of.

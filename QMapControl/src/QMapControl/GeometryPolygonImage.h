@@ -52,7 +52,11 @@ namespace qmapcontrol
          * @param zoom_minimum The minimum zoom level to show this geometry at.
          * @param zoom_maximum The maximum zoom level to show this geometry at.
          */
-        GeometryPolygonImage(const PointWorldCoord& point_top_left, const PointWorldCoord& bottom_right_coord, const QPixmap& image, const int zoom_minimum = 0, const int zoom_maximum = kDefaultMaxZoom);
+        GeometryPolygonImage(const PointWorldCoord& top_left_coord,
+                             const PointWorldCoord& bottom_right_coord,
+                             const QPixmap& image,
+                             const int zoom_minimum = 0,
+                             const int zoom_maximum = kDefaultMaxZoom);
 
         //! Disable copy constructor.
         GeometryPolygonImage(const GeometryPolygonImage&) = delete;
@@ -61,7 +65,7 @@ namespace qmapcontrol
         GeometryPolygonImage& operator=(const GeometryPolygonImage&) = delete;
 
         //! Destructor.
-        virtual ~GeometryPolygonImage() = default;
+        ~GeometryPolygonImage() override = default;
 
     public:
         /*!

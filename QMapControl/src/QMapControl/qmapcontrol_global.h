@@ -18,7 +18,40 @@
 #endif
 */
 
-//#define QMAP_DEBUG 1
+/// Set to non-zero for debug output
+#define QMAP_DEBUG 0
+/// Set to non-zero multiplicator to simulate slow HW operation
+/// Helps to uncover race conditions and performance related issues
+#define QMAP_DEBUG_EMULATE_SLOW 0
+
+#if (QMAP_DEBUG > 0)
+
+#define QMAP_DBG() qDebug()
+#define QMAP_INFO() qInfo()
+
+#else
+
+#define QMAP_DBG() if (0) qDebug()
+#define QMAP_INFO() if (0) qInfo()
+
+#endif
+
+#if (QMAP_DEBUG_EMULATE_SLOW > 0)
+
+#include <QThread>
+
+/// insert artificial sleep times to emulate slow hardware
+#define DBG_SLEEP(time) \
+    do { \
+        QMAP_DBG() << "Sleeping for: " << (time); \
+        QThread::msleep((time)*(QMAP_DEBUG_EMULATE_SLOW)); \
+    } while(0)
+
+#else
+
+#define DBG_SLEEP(time) do {} while(0)
+
+#endif
 
 // MSVC does not define M_PI in <cmath>
 #ifndef M_PI
@@ -27,4 +60,4 @@
 
 #define QMAPCONTROL_EXPORT
 
-constexpr int kDefaultMaxZoom = 20;
+constexpr int kDefaultMaxZoom = 21;

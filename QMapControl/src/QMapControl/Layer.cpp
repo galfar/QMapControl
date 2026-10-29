@@ -115,4 +115,10 @@ namespace qmapcontrol
         // Set whether to enable mouse events.
         m_mouse_events_enabled = enable;
     }
+
+    bool Layer::mousePressEvent(const QMouseEvent* /*mouse_event*/, const PointWorldCoord& /*mouse_point_coord*/, const int /*controller_zoom*/) const
+    {
+        // Do nothing.
+        return false;
+    }
 }

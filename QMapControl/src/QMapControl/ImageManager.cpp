@@ -23,21 +23,27 @@
 *
 */
 
+// Local includes.
 #include "ImageManager.h"
+#include "Projection.h"
+#include "ITileDiskCache.hpp"
 
 // Qt includes.
-#include <QCryptographicHash>
-#include <QDateTime>
 #include <QPainter>
-#include <QImageReader>
-#include <QBuffer>
+#include <QThreadPool>
+#include <QtConcurrent/QtConcurrentRun>
 
-// Local includes.
-#include "Projection.h"
-
+//STL includes.
+#include <cmath>
+#include <memory>
 
 namespace qmapcontrol
 {
+    struct ImageManager::TileRequest
+    {
+        TileDescriptor coord;
+        RequestPurpose purpose;
+    };
     const int kDefaultTileSizePx = 256;
     const int kDefaultPixmapCacheSizeMiB = 30;
 
@@ -45,14 +51,21 @@ namespace qmapcontrol
     {
         /// Singleton instance of Image Manager.
         std::unique_ptr<ImageManager> m_instance = nullptr;
+
+        // this is a FAKE instance counter as we have only a singleton of QMapControl
+        // but we have to govern the sequence, that only the really last one destructs the singleton
+        int m_instanceCounter = 0;
     }
 
-    ImageManager& ImageManager::get()
+    ImageManager& ImageManager::create()
     {
+        QMAP_DBG() << "instance count went from " << m_instanceCounter
+                   << " to " << (m_instanceCounter + 1);
+        m_instanceCounter++;
+
         // Does the singleton instance exist?
-        if(m_instance == nullptr)
+        if (m_instance == nullptr)
         {
-            qDebug() << "Spawning new ImageManager";
             // Create a default instance
             m_instance.reset(new ImageManager(kDefaultTileSizePx));
         }
@@ -62,8 +75,26 @@ namespace qmapcontrol
         return *(m_instance.get());
     }
 
+    ImageManager& ImageManager::get()
+    {
+        Q_ASSERT(m_instance);
+        // Return the reference to the instance object.
+        return *(m_instance.get());
+    }
+
     void ImageManager::destroy()
     {
+        QMAP_DBG() << "instance count went from " << m_instanceCounter
+                   << " to " << (m_instanceCounter - 1);
+
+        // only the last destruction will actually reset the singleton
+        m_instanceCounter--;
+
+        if (m_instanceCounter > 0) {
+            return;
+        }
+
+        QMAP_DBG() << "Destroying ImageManager";
         // Ensure the singleton instance is destroyed.
         m_instance.reset(nullptr);
     }
@@ -71,21 +102,76 @@ namespace qmapcontrol
     ImageManager::ImageManager(const int tile_size_px, QObject* parent)
         : QObject(parent),
           m_tile_size_px(tile_size_px),
+          m_networkAccessManager(nullptr),
           m_diskCache(nullptr),
-          m_cachePolicy(CachePolicy::AlwaysCache),
-          m_tileProvider(nullptr)
+          m_diskCachePolicy(CachePolicy::AlwaysCache),
+          m_diskCacheReadOnly(false)
     {
+        QMAP_DBG() << "Spawning new ImageManager";
+        qRegisterMetaType<RequestPurpose>("RequestPurpose");
+        qRegisterMetaType<TileDescriptor>("TileDescriptor");
+        qRegisterMetaType<Failure>("Failure");
+
         setMemoryCacheCapacity(kDefaultPixmapCacheSizeMiB);
         // Setup a loading/empty pixmaps
         setupPlaceholderPixmaps();
+        m_threadPool = QThreadPool::globalInstance();
+    }
 
-        // Connect signal/slot for image downloads.
-        connect(this, &ImageManager::downloadImage, &m_networkManager, &NetworkManager::downloadImage);
-        connect(&m_networkManager, &NetworkManager::imageDownloaded, this, &ImageManager::handleImageDownloaded);
-        connect(&m_networkManager, &NetworkManager::imageCached, this, &ImageManager::handleImageCached);
-        connect(&m_networkManager, &NetworkManager::imageDownloadFailed, this, &ImageManager::imageDownloadFailed);
-        connect(&m_networkManager, &NetworkManager::downloadingInProgress, this, &ImageManager::downloadingInProgress);
-        connect(&m_networkManager, &NetworkManager::downloadingFinished, this, &ImageManager::downloadingFinished);
+    ImageManager::~ImageManager() {
+        if (m_instance!=nullptr) {
+            qWarning("ImageManager has not destroyed in ordinary fashion.");
+        }
+        // suspend any incoming requests from being processed (return empty pixmaps)
+        m_diskCachePolicy = CachePolicy::AlwaysCache;
+        if (m_networkManager)
+        {
+            m_networkManager->disconnect(this);
+            disconnect(m_networkManager);
+            m_networkManager = nullptr;
+        }
+        m_diskCache = nullptr;
+        clearMemoryCache();
+        if (m_threadPool) {
+            if (!m_threadPool->waitForDone(2000)) {
+                qWarning() << "Background tasks did not finish in time";
+            }
+        }
+    }
+
+    void ImageManager::enableNetworkManager(bool enable) {
+        if (enable)
+        {
+            if (!m_networkManager)
+            {
+                QMAP_DBG() << "Spawning Network Manager";
+
+                if (!m_networkAccessManager) {
+                    qCritical() << "NetworkAccessManager was not assigned";
+                }
+                m_networkManager = new NetworkManager(m_networkAccessManager, this);
+                m_networkManager->setProxy(m_proxy);
+                // Connect signal/slot for image downloads.
+                // QueuedConnection because of the m_requestsLock
+                connect(this, &ImageManager::downloadTile, m_networkManager, &NetworkManager::downloadTile, Qt::QueuedConnection);
+                connect(m_networkManager, &NetworkManager::tileDownloaded, this, &ImageManager::handleTileDownloaded);
+                connect(m_networkManager, &NetworkManager::tileDownloadFailed, this, &ImageManager::handleTileDownloadFailed);
+                connect(m_networkManager, &NetworkManager::downloadingInProgress, this, &ImageManager::downloadingInProgress);
+                connect(m_networkManager, &NetworkManager::downloadingFinished, this, &ImageManager::downloadingFinished);
+            }
+        }
+        else
+        {
+            if (m_networkManager)
+            {
+                QMAP_DBG() << "Destroying Network Manager";
+                abortLoading();
+                m_networkManager->disconnect(this);
+                disconnect(m_networkManager);
+                m_networkManager->deleteLater();
+                m_networkManager = nullptr;
+            }
+        }
     }
 
     int ImageManager::tileSizePx() const
@@ -105,190 +191,18 @@ namespace qmapcontrol
 
     void ImageManager::setProxy(const QNetworkProxy& proxy)
     {
-        // Set the proxy on the network manager.
-        m_networkManager.setProxy(proxy);
+        m_proxy = proxy;
+        if (m_networkManager)
+        {
+            // Set the proxy on the network manager.
+            m_networkManager->setProxy(proxy);
+        }
     }
 
-    bool ImageManager::configureDiskCache(const QDir& dir, int capacityMiB)
+    void ImageManager::setThreadPool(QThreadPool* pool)
     {
-        // Ensure that the path exists (still returns true when path already exists.
-        bool success = dir.mkpath(dir.absolutePath());
-
-        // If the path does exist, enable disk cache.
-        if (success)
-        {
-            if (m_diskCache == nullptr) {
-                m_diskCache = new QNetworkDiskCache(this);
-            }
-            m_diskCache->setCacheDirectory(dir.absolutePath());
-            m_diskCache->setMaximumCacheSize(static_cast<qint64>(capacityMiB) * 1024 * 1024);
-        }
-        else
-        {
-            qWarning() << "Unable to create directory for persistent cache '" << dir.absolutePath() << "'";
-        }
-
-        // Return success.
-        return success;
-    }
-
-    void ImageManager::clearDiskCache() {
-        if (m_diskCache != nullptr) {
-            m_diskCache->clear();
-        }
-    }
-
-    void ImageManager::abortLoading()
-    {
-        // Abort any remaining network manager downloads.
-        m_networkManager.abortDownloads();
-
-        m_prefetchUrls.clear();
-    }
-
-    int ImageManager::downloadQueueSize() const
-    {
-        // Return the network manager downloading queue size.
-        return m_networkManager.downloadQueueSize();
-    }
-
-    QPixmap ImageManager::getImage(const QUrl& url)
-    {
-        QPixmap pixmap;
-        if (findTileInMemoryCache(url, pixmap))
-        {
-            Q_ASSERT(!pixmap.isNull());
-            // Image found in memory cache, use it
-            return pixmap;
-        }
-        return getImageInternal(url);
-    }
-
-    QByteArray ImageManager::rawImageFromDiskCache(const QUrl& url) const {
-        {
-            QMutexLocker locked(&m_tileProviderLock);
-            if (m_tileProvider)
-            {
-                QByteArray data;
-                (void)m_tileProvider->getTileData(url, data);
-                return data;
-            }
-        }
-
-        if ((m_diskCache != nullptr))
-        {
-            auto data = m_diskCache->data(url);
-            if (data != nullptr) {
-                QByteArray imgData = data->readAll();
-                data->close();
-                delete data;
-                return imgData;
-            }
-        }
-        return QByteArray();
-    }
-
-    QPixmap ImageManager::getImageInternal(const QUrl& url)
-    {
-        {
-            QMutexLocker locked(&m_tileProviderLock);
-            if (m_tileProvider) {
-                QByteArray data;
-                if (m_tileProvider->getTileData(url, data)) {
-                    QBuffer buffer(&data);
-                    return getImageFromDevice(url, &buffer);
-                } else {
-                    return m_pixmapEmpty;
-                }
-            }
-        }
-
-        // in offline mode, ask cache directly or return empty tile
-        if (m_cachePolicy == CachePolicy::AlwaysCache || m_cachePolicy == CachePolicy::PreferCache)
-        {
-            if (m_diskCache != nullptr)
-            {
-                auto data = m_diskCache->data(url);
-                if (data != nullptr)
-                {
-                    QPixmap pixmap = getImageFromDevice(url, data);
-                    data->close();
-                    delete data;
-                    return pixmap;
-                }
-            }
-
-            // In offline mode just look in the caches, no downloads
-            if (m_cachePolicy == CachePolicy::AlwaysCache) {
-                return m_pixmapEmpty;
-            }
-        }
-
-        // Emit that we need to download the image using the network manager.
-        // Network manager will prefer network over local cache.
-        emit downloadImage(url, false);
-
-        // Image not found, return "loading" image
-        return m_pixmapLoading;
-    }
-
-    QPixmap ImageManager::getImageFromDevice(const QUrl& url, QIODevice* device)
-    {
-        QImageReader imageReader(device);
-        QPixmap pixmap = QPixmap::fromImageReader(&imageReader);
-
-        insertTileToMemoryCache(url, pixmap);
-        m_prefetchUrls.remove(url);
-
-        return pixmap;
-    }
-
-    void ImageManager::prefetchImage(const QUrl& url)
-    {
-        QPixmap pixmap;
-
-        // Only if image is not already available
-        if (!findTileInMemoryCache(url, pixmap)) {
-            // Add the url to the prefetch list.
-            m_prefetchUrls.insert(url);
-            // Request the image
-            (void)getImageInternal(url);
-        }
-    }
-
-    bool ImageManager::cacheImageToDisk(const QUrl& url)
-    {
-        if (m_cachePolicy == CachePolicy::AlwaysCache || m_cachePolicy == CachePolicy::PreferCache) {
-            if (rawImageFromDiskCache(url).size() > 0) {
-                handleImageCached(url);
-                return true;
-            }
-            if (m_cachePolicy == CachePolicy::AlwaysCache) {
-                return true;
-            }
-        }
-        // Emit that we need to download the image using the network manager.
-        emit downloadImage(url, true);
-        return false;
-    }
-
-    void ImageManager::setCachePolicy(CachePolicy policy)
-    {
-        m_cachePolicy = policy;
-
-        if (m_cachePolicy == CachePolicy::AlwaysCache)
-        {
-            abortLoading();
-        }
-
-        if (m_cachePolicy == CachePolicy::AlwaysNetwork)
-        {
-            m_networkManager.setCache(nullptr);
-        }
-        else
-        {
-            m_networkManager.setCache(m_diskCache);
-        }
+        m_threadPool = pool;
+        m_threadPool->setParent(this);
     }
 
     void ImageManager::setLoadingPixmap(const QPixmap &pixmap)
@@ -296,48 +210,28 @@ namespace qmapcontrol
         m_pixmapLoading = pixmap;
     }
 
+    qint64 ImageManager::loadingPixmapCacheKey()
+    {
+        return m_pixmapLoading.cacheKey();
+    }
+
     void ImageManager::setEmptyPixmap(const QPixmap &pixmap)
     {
         m_pixmapEmpty = pixmap;
     }
 
-    void ImageManager::handleImageDownloaded(const QUrl& url, const QPixmap& pixmap)
+    qint64 ImageManager::emptyPixmapCacheKey()
     {
-#ifdef QMAP_DEBUG
-        qDebug() << "ImageManager::handleImageDownloaded '" << url << "'";
-#endif
-        // Is this a prefetch request?
-        if (m_prefetchUrls.contains(url))
-        {
-            // Remove the url from the prefetch list.
-            m_prefetchUrls.remove(url);
-        }
-        else
-        {
-            // Let the world know we have received an updated image.
-            emit imageUpdated(url);
-        }
-
-        // Add it to the pixmap cache
-        insertTileToMemoryCache(url, pixmap);
-    }
-
-    void ImageManager::handleImageCached(const QUrl& url)
-    {
-        Q_UNUSED(url);
-#ifdef QMAP_DEBUG
-        qDebug() << "ImageManager::handleImageCached '" << url << "'";
-#endif
-        emit imageCached();
+        return m_pixmapEmpty.cacheKey();
     }
 
     void ImageManager::setupPlaceholderPixmaps()
     {
-        // Create a new pixmap.
-        m_pixmapLoading = QPixmap(m_tile_size_px, m_tile_size_px);
+        m_pixmapEmpty = QPixmap(m_tile_size_px, m_tile_size_px);
+        m_pixmapEmpty.fill(Qt::transparent);
 
-        // Make is transparent.
-        m_pixmapLoading.fill(Qt::transparent);
+        // Create a new pixmap.
+        m_pixmapLoading = QPixmap(m_pixmapEmpty);
 
         // Add a pattern.
         QPainter painter(&m_pixmapLoading);
@@ -347,23 +241,486 @@ namespace qmapcontrol
         // Add "LOADING..." text.
         painter.setPen(Qt::black);
         painter.drawText(m_pixmapLoading.rect(), Qt::AlignCenter, "LOADING...");
-
-        m_pixmapEmpty = QPixmap(m_tile_size_px, m_tile_size_px);
-        m_pixmapEmpty.fill(Qt::transparent);
     }
 
-    QByteArray ImageManager::hashTileUrl(const QUrl& url) const
+    bool ImageManager::configureDiskCache(ITileDiskCache* diskCache)
     {
-        // Return the md5 hex value of the given url at a specific projection and tile size.
-        return QCryptographicHash::hash((url.toString()
-                                           + QString::number(projection::get().epsg())
-                                           + QString::number(m_tile_size_px)).toUtf8(),
-                                        QCryptographicHash::Md5).toHex();
+        if (diskCache && !diskCache->isValid())
+        {
+            return false;
+        }
+
+        if (m_diskCache)
+        {
+            // Don't do this (leave it to termination)
+            // it's currently unsafe, we would have to block till threadpool is finished
+            //m_diskCache->deleteLater();
+        }
+        m_diskCache = diskCache;
+        if (diskCache)
+        {
+            diskCache->setParent(this);
+        }
+        return true;
+    }
+
+    void ImageManager::clearDiskCache()
+    {
+        if (m_diskCache)
+        {
+            m_diskCache->clear();
+        }
+    }
+
+    void ImageManager::abortLoading()
+    {
+        // Abort any remaining network manager downloads.
+        if (m_networkManager)
+        {
+            m_networkManager->abortDownloads();
+        }
+    }
+
+    int ImageManager::downloadQueueSize() const
+    {
+        // Return the number of pending requests
+        QReadLocker lock(&m_requestsLock);
+        return m_requestedTiles.count();
+    }
+
+    QPixmap ImageManager::getImage(const QString& sourceId,
+                                   int x, int y, int zoom,
+                                   const UrlGenerator& urlGenerator,
+                                   bool prefetchOnly, int maxSourceZoomForUpscale)
+    {
+        // NOTE: Runs in a pooled thread during map rendering
+        Q_ASSERT(urlGenerator);
+
+        TileDescriptor tileCoord{sourceId, x, y, zoom};
+        RequestPurpose purpose = (!prefetchOnly ? RequestPurpose::Display : RequestPurpose::Prefetch);
+        QUrl url = urlGenerator( x, y, zoom);
+        {
+            QWriteLocker lock(&m_requestsLock);
+            auto it = m_requestedTiles.find(url);
+            if (it != m_requestedTiles.end())
+            {
+                // upgrade request
+                if (it.value().purpose != purpose && it.value().purpose != RequestPurpose::Display)
+                {
+                    QMAP_DBG() << "Upgrading purpose of '" << tileCoord.toString()
+                               << "' with URL " << url.toString()
+                               << " " << purpose;
+
+                    it.value().purpose = purpose;
+                }
+                else
+                {
+                    QMAP_DBG() << "Already requested: " << url.toString();
+                }
+                return m_pixmapLoading;
+            }
+        }
+
+        const QByteArray tileKey = tileCoord.key();
+
+        QPixmap pixmap;
+        if (findTileInMemoryCache(tileKey, pixmap))
+        {
+            QMAP_DBG() << "Serving from mem-cache: " << url.toString();
+            Q_ASSERT(!pixmap.isNull());
+            // Image found in memory cache, use it
+            return pixmap;
+        }
+
+        bool doUpscale = ((maxSourceZoomForUpscale > 0) && (zoom > maxSourceZoomForUpscale));
+        if (doUpscale)
+        {
+            // Upscale is requested, top tile provider using given URL generator is passed in
+            pixmap = upscaleTopTile(tileCoord, maxSourceZoomForUpscale,
+                                    [this, sourceId, urlGenerator](int x, int y, int zoom)
+                                    {
+                                        return getImage(sourceId, x, y, zoom, urlGenerator, true, -1);
+                                    });
+            if (!pixmap.isNull())
+            {
+                insertTileToMemoryCache(tileKey, pixmap);
+            }
+            return pixmap;
+        }
+
+        // Consult cache if tile is already present
+        if ((m_diskCachePolicy == CachePolicy::AlwaysCache)
+                || (m_diskCachePolicy == CachePolicy::PreferCache))
+        {
+            if (m_diskCache != nullptr)
+            {
+                const QByteArray data = m_diskCache->getTile(tileCoord);
+
+                if (!data.isEmpty())
+                {
+                    QPixmap pixmap = getImageFromByteArray(tileKey, data);
+                    if (pixmap.isNull())
+                    {
+                        qWarning() << "Pixmap is empty for disk-cached '" << tileCoord.toString()
+                                   << "', data size: " << data.size();
+                        return m_pixmapEmpty;
+                    }
+                    QMAP_DBG() << "Hit disk cache for:" << tileCoord.toString();
+                    return pixmap;
+                }
+            }
+
+            // In offline mode just look in the caches, no downloads
+            if (m_diskCachePolicy == CachePolicy::AlwaysCache)
+            {
+                return m_pixmapEmpty;
+            }
+        }
+
+        if (m_networkManager)
+        {
+            // Emit that we need to download the image using the network manager.
+            QMAP_DBG() << "Scheduling download of '" << tileCoord.toString()
+                       << "' with URL " << url.toString()
+                       << " " << purpose;
+            {
+                QWriteLocker locker(&m_requestsLock);
+                m_requestedTiles.insert(url, TileRequest{tileCoord, purpose});
+            }
+            emit downloadTile(url);
+            // Image not found, return "loading" image
+            return m_pixmapLoading;
+        }
+        else
+        {
+            return m_pixmapEmpty;
+        }
+    }
+
+    QPixmap ImageManager::getImage(const QString& sourceId,
+                                   int x, int y, int zoom,
+                                   const TileDataProvider& tileDataProvider,
+                                   bool prefetchOnly, int maxSourceZoomForUpscale)
+    {
+        // NOTE: Runs in a pooled thread during map rendering
+        Q_ASSERT(tileDataProvider);
+        TileDescriptor tileCoord{sourceId, x, y, zoom};
+        const QByteArray tileKey = tileCoord.key();
+
+        // Prefetch was blocking and was disabled for gpkg
+        // Prefetching itself is a good idea but implementaion would need something similar as the
+        // online sources (asynchronous read/decode with queueing rather than direct blocking)
+        if (prefetchOnly) {
+            return QPixmap();
+        }
+
+        QPixmap pixmap;
+        if (findTileInMemoryCache(tileKey, pixmap))
+        {
+            Q_ASSERT(!pixmap.isNull());
+            // Image found in memory cache, use it
+            return pixmap;
+        }
+
+        bool doUpscale = ((maxSourceZoomForUpscale > 0) && (zoom > maxSourceZoomForUpscale));
+        if (doUpscale)
+        {
+            // Upscale is requested, top tile provider using given data provider is passed in
+            pixmap = upscaleTopTile(tileCoord, maxSourceZoomForUpscale,
+                                    [this, sourceId, tileDataProvider, prefetchOnly](int x, int y, int zoom)
+                                    {
+                                        // make the 'prefetchOnly' hardcoded 'true'
+                                        // in the same way as for online sources, once the proper async. prefetch is implemented
+                                        return getImage(sourceId, x, y, zoom, tileDataProvider, prefetchOnly, -1);
+                                    });
+            if (!pixmap.isNull())
+            {
+                insertTileToMemoryCache(tileKey, pixmap);
+            }
+            return pixmap;
+        }
+
+        // Ask external source for the tile data
+        QByteArray tileData = tileDataProvider(x, y, zoom);
+        if (!tileData.isEmpty())
+        {
+            pixmap = getImageFromByteArray(tileKey, tileData);
+
+            if (pixmap.isNull())
+            {
+                qWarning() << "Pixmap is empty for '" << tileCoord.toString() << "', data size: " << tileData.size();
+                return m_pixmapEmpty;
+            }
+            return pixmap;
+        }
+
+        return m_pixmapEmpty;
+    }
+
+    QPixmap ImageManager::upscaleTopTile(const TileDescriptor& tile, int maxSourceZoom,
+                                         const TileImageProvider& topTileProvider)
+    {
+        DBG_SLEEP(10);
+
+        // First we calculate tile coords for the top tile (tile at maxSourceZoom level).
+        // Then copy and scale up the area covering the area of the requested tile.
+        int zoomDiff = tile.zoom - maxSourceZoom;
+        // Scale factor is used both for top tile lookup and subsequent stretched draw
+        // from top tile to tile at desired zoom level. Valid for power of 2 zoom
+        // levels. Note that tile matrix width differences between projections (Mercators vs
+        // EPSG 4326) do not matter here.
+        double scaleFactor = std::pow(2, zoomDiff);
+
+        double topTileX = tile.x / scaleFactor;
+        double topTileY = tile.y / scaleFactor;
+
+        QPixmap topTile = topTileProvider(static_cast<int>(std::floor(topTileX)),
+                                          static_cast<int>(std::floor(topTileY)),
+                                          maxSourceZoom);
+
+        if (topTile.isNull() || (topTile.cacheKey() == m_pixmapLoading.cacheKey()))
+        {
+            // Top tile is not available at the moment
+            return m_pixmapEmpty;
+        }
+
+        QPixmap destTile = QPixmap(topTile.width(), topTile.height());
+
+        double srcX = (topTileX - std::floor(topTileX)) * topTile.width();
+        double srcY = (topTileY - std::floor(topTileY)) * topTile.height();
+
+        // Move half a pixel so bilinear filtering handles "sub" tile edges nicely.
+        // Also make sure the size is at least 1x1 pixels or drawPixmap fails.
+        QRectF srcRect_px(std::max(0.0, srcX),
+                        std::max(0.0, srcY),
+                        std::max(1.0, topTile.width() / scaleFactor),
+                        std::max(1.0, topTile.height() / scaleFactor));
+
+        // Tiles may have transparent parts but these won't be properly
+        // copied from top tile by QPixmap's draw calls regardless of
+        // composition mode.
+        // In this case we must pre-fill pixmap with transparent color
+        // as pixmap data is unintialized garbage when created and this would show
+        // in the transparent parts.
+
+        // Ideally, we only fill when really (rarely) needed (fill may involve QImage conversion).
+        // Fortunately, hasAlphaChannel() does report false for ordinary JPEG and opaque
+        // PNG tiles (provided they're stored as 24bit in GPKG).
+        bool hasAlpha = topTile.hasAlphaChannel();
+        if (hasAlpha) {
+            destTile.fill(Qt::transparent);
+        }
+
+        QPainter painter(&destTile);
+        painter.drawPixmap(destTile.rect(), topTile, srcRect_px);
+
+        return destTile;
+    }
+
+    QByteArray ImageManager::tileFromDiskCache(const QString& sourceId,
+                                               int x, int y, int zoom) const
+    {
+        return tileFromDiskCache(TileDescriptor{sourceId, x, y, zoom});
+    }
+
+    QByteArray ImageManager::tileFromDiskCache(const TileDescriptor& tileCoord) const
+    {
+        if (m_diskCache != nullptr)
+        {
+            return m_diskCache->getTile(tileCoord);
+        }
+
+        return QByteArray();
+    }
+
+    QPixmap ImageManager::getImageFromByteArray(const QByteArray& tileKey, const QByteArray& data)
+    {
+        QPixmap pixmap;
+        if (pixmap.loadFromData(data))
+        {
+            // Add decoded tile image to the pixmap cache
+            insertTileToMemoryCache(tileKey, pixmap);
+        }
+        return pixmap;
+    }
+
+    bool ImageManager::cacheImageToDisk(const UrlGenerator& urlGenerator,
+                                        const QString& sourceId,
+                                        int x, int y, int zoom)
+    {
+        TileDescriptor tileCoord{sourceId, x, y, zoom};
+
+        if (m_diskCachePolicy == CachePolicy::AlwaysCache || m_diskCachePolicy == CachePolicy::PreferCache)
+        {
+            // NOTE: this reads the tile from disk, it's safer but slow for large tile repositories.
+            const QByteArray tileData = tileFromDiskCache(tileCoord);
+            if (!tileData.isEmpty())
+            {
+                emit tileCached(tileCoord, true, tileData);
+                return true;
+            }
+            if (m_diskCachePolicy == CachePolicy::AlwaysCache)
+            {
+                emit tileDownloadFailed(tileCoord, Failure::ContentDoesNotExist, RequestPurpose::Cache);
+                return true;
+            }
+        }
+        // Emit that we need to download the tile using the network manager.
+        QUrl url = urlGenerator(x, y, zoom);
+        {
+            QWriteLocker locker(&m_requestsLock);
+            if (!m_requestedTiles.contains(url))
+            {
+                m_requestedTiles.insert(url, TileRequest{tileCoord, RequestPurpose::Cache});
+                emit downloadTile(url);
+            }
+        }
+        return false;
+    }
+
+    void ImageManager::setDiskCachePolicy(CachePolicy policy)
+    {
+        if (policy != m_diskCachePolicy)
+        {
+            m_diskCachePolicy = policy;
+            enableNetworkManager(m_diskCachePolicy != CachePolicy::AlwaysCache);
+        }
+    }
+
+    void ImageManager::setNetworkManager(INetworkAccessManager* networkAccessManager) {
+        // allow to set only once
+        if (m_networkAccessManager) {
+            qCritical() << "NetworkAccessManager was already assigned";
+            return;
+        }
+
+        m_networkAccessManager = networkAccessManager;
+    }
+
+    void ImageManager::setDiskCacheReadOnly(bool readOnly) {
+        m_diskCacheReadOnly = readOnly;
+    }
+
+    void ImageManager::decodeRequestedTileImage(const QByteArray& tileData,
+                                                const TileDescriptor& coord,
+                                                RequestPurpose purpose)
+    {
+        DBG_SLEEP(5);
+        QPixmap pixmap = getImageFromByteArray(coord.key(), tileData);
+
+        if (pixmap.isNull())
+        {
+            qWarning() << "Pixmap is empty for " << coord.toString() << ", data size: " << tileData.size();
+        }
+        if (purpose == RequestPurpose::Display)
+        {
+            // This tile was requested by map painter so let's notify it
+            emit imageUpdated();
+        }
+    }
+
+    void ImageManager::handleTileDownloaded(const QUrl& url,
+                                            const QByteArray& tileData)
+    {
+        //retrieving the tile coordinates in the main thread since possibly two slave thread needs them
+        TileRequest request;
+        {
+            QReadLocker locker(&m_requestsLock);
+            if (!m_requestedTiles.contains(url))
+            {
+                return;
+            }
+            request = m_requestedTiles.value(url);
+        }
+        const TileDescriptor coord = request.coord;
+        QMAP_DBG() << "ImageManager::handleTileDownloaded '" << url << "'" << request.purpose;
+
+        // Insert the received tile into the disk cache
+        if ((m_diskCache != nullptr) && (m_diskCachePolicy != CachePolicy::AlwaysNetwork))
+        {
+            if (!m_diskCacheReadOnly) {
+                QtConcurrent::run(m_threadPool, [this, coord, tileData]()
+                {
+                    if (m_diskCache != nullptr)
+                    {
+                        if (!m_diskCache->insertTile(coord, tileData))
+                        {
+                            qWarning() << "Failed to store the tile in cache.";
+                        }
+                    }
+                });
+            }
+            // Announce we have the stuff
+            emit tileCached(coord, false, tileData);
+        }
+
+        if (request.purpose != RequestPurpose::Cache)
+        {
+            // Decodes the tile to pixmap and also puts it in memory cache
+            QtConcurrent::run(m_threadPool, [this, url, request, coord, tileData]()
+            {
+                decodeRequestedTileImage(tileData, coord, request.purpose);
+                // now it's time to remove request from the queue
+                QWriteLocker locker(&m_requestsLock);
+                (void)m_requestedTiles.remove(url);
+            });
+        }
+        else
+        {
+            // now it's time to remove request from the queue
+            QWriteLocker locker(&m_requestsLock);
+            (void)m_requestedTiles.remove(url);
+        }
+
+        emit tileDownloadSucceeded(coord, request.purpose);
+    }
+
+    void ImageManager::handleTileDownloadFailed(const QUrl& url, Failure failure)
+    {
+        // NOTE: Runs in the main thread
+        QMAP_DBG() << "ImageManager::handleTileDownloadFailed '" << url << "'";
+
+        TileRequest request;
+        {
+            QWriteLocker locker(&m_requestsLock);
+            if (!m_requestedTiles.contains(url))
+            {
+                return;
+            }
+            request = m_requestedTiles.take(url);
+        }
+
+        if ((request.purpose != RequestPurpose::Cache)
+                && (m_diskCachePolicy == CachePolicy::PreferNetwork)
+                && (failure != Failure::Cancelled))
+        {
+            // With PreferNetwork we look into the disk cache only when network request for a tile
+            // fails. We're not interested in the exact reason (well apart from cancellation),
+            // NetworkManager emits this signal as it sees fit (some failures are retried etc.).
+
+            QtConcurrent::run(m_threadPool, [this, request]()
+            {
+                const TileDescriptor coord = request.coord;
+                const QByteArray cachedTileData = tileFromDiskCache(coord);
+                if (!cachedTileData.isEmpty())
+                {
+                    decodeRequestedTileImage(cachedTileData, coord, request.purpose);
+                }
+            });
+        }
+
+        emit tileDownloadFailed(request.coord, failure, request.purpose);
     }
 
     void ImageManager::setMemoryCacheCapacity(int capacityMiB)
     {
         m_memoryCache.setMaxCost(capacityMiB * 1024 * 1024);
+    }
+
+    void ImageManager::clearMemoryCache()
+    {
+        QWriteLocker locker(&m_memoryCacheLock);
+        m_memoryCache.clear();
     }
 
     class QPixmapCacheEntry : public QPixmap
@@ -372,49 +729,54 @@ namespace qmapcontrol
         QPixmapCacheEntry(const QPixmap &pixmap) : QPixmap(pixmap) { }
     };
 
-    void ImageManager::insertTileToMemoryCache(const QUrl& url, const QPixmap& pixmap)
+    bool ImageManager::isTileImagePresent(const TileDescriptor& tileId) const
     {
-        QWriteLocker locker(&m_tileCacheLock);
-
-        if (!pixmap.isNull()) {
-            int cost = pixmap.width() * pixmap.height() * pixmap.depth() / 8;
-            m_memoryCache.insert(hashTileUrl(url), new QPixmapCacheEntry(pixmap), cost);
-        }
-
-#ifdef QMAP_DEBUG
-        qDebug() << "ImageManager: pixmap cache -> total size KiB: " << m_memoryCache.totalCost() / 1024
-                 << ", now inserted: " << url.toString();
-#endif
+        QReadLocker locker(&m_memoryCacheLock);
+        return m_memoryCache.contains(tileId.key());
     }
 
-    bool ImageManager::findTileInMemoryCache(const QUrl& url, QPixmap& pixmap) const
+    bool ImageManager::isTileImagePresent(const QString& sourceId,
+                                          int x, int y, int zoom) const
     {
-        QReadLocker locker(&m_tileCacheLock);
+        return isTileImagePresent(TileDescriptor{sourceId, x, y, zoom});
+    }
 
-        QPixmap *entry = m_memoryCache.object(hashTileUrl(url));
-        if (entry != nullptr) {
+    void ImageManager::insertTileToMemoryCache(const QByteArray& tileKey, const QPixmap& pixmap)
+    {
+        QWriteLocker locker(&m_memoryCacheLock);
+
+        if (!pixmap.isNull())
+        {
+            DBG_SLEEP(5);
+            int cost = pixmap.width() * pixmap.height() * pixmap.depth() / 8;
+            m_memoryCache.insert(tileKey, new QPixmapCacheEntry(pixmap), cost);
+        }
+
+        QMAP_DBG() << "ImageManager: pixmap cache -> total size MiB: "
+                   << QString::number(m_memoryCache.totalCost() / (1024.0 * 1024.0), 'f', 2)
+                   << " / "
+                   << QString::number(m_memoryCache.maxCost() / (1024.0 * 1024.0), 'f', 1)
+                   << " total items: " << m_memoryCache.count()
+                   << ", now inserted: " << tileKey;
+    }
+
+    bool ImageManager::findTileInMemoryCache(const QByteArray& tileKey, QPixmap& pixmap) const
+    {
+        // when we read from cache it reordes inside
+        // to be able to track the LRU behaviour
+        // therefore it needs a writelocker even for the read
+        //
+        // https://bugreports.qt.io/browse/QTBUG-19794
+        QWriteLocker locker(&m_memoryCacheLock);
+
+        const QPixmap *entry = m_memoryCache.object(tileKey);
+        if (entry != nullptr)
+        {
             pixmap = *entry;
-
-#ifdef QMAP_DEBUG
-        qDebug() << "ImageManager: found in pixmap cache: " << url.toString();
-#endif
-
             return true;
         }
 
         return false;
     }
-
-    void ImageManager::setCustomTileProvider(ITileProvider *provider) {
-        // weakness: does not stop pending redrawing,
-        // therefore custom provider might still receive requests made by current redrawing
-        // with urls for different source (there is no "abortRedrawing")
-        qDebug() << "ImageManager: request set provider " << provider;
-        QMutexLocker tileProviderLock(&m_tileProviderLock);
-        abortLoading();
-        m_tileProvider = provider;
-    }
 }
-
-
 

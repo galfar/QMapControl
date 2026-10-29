@@ -42,7 +42,7 @@ namespace qmapcontrol
     {
     }
 
-    std::vector<PointWorldCoord> GeometryLineString::points() const
+    const std::vector<PointWorldCoord>& GeometryLineString::points() const
     {
         // Return the points.
         return m_points;
@@ -78,8 +78,18 @@ namespace qmapcontrol
             polygon_line.append(point.rawPoint());
         }
 
+        QRectF bbox = polygon_line.boundingRect();
+        // Workaround for exactly horizontal and vertical lines where
+        // QRectF with null w/h would fail intersections with other QRectFs
+        if (bbox.width() == 0.0) {
+            bbox.setWidth(0.0000001);
+        }
+        if (bbox.height() == 0.0) {
+            bbox.setHeight(0.0000001);
+        }
+
         // Return the bounding box.
-        return RectWorldCoord::fromQRectF(polygon_line.boundingRect());
+        return RectWorldCoord::fromQRectF(bbox);
     }
 
     bool GeometryLineString::touches(const Geometry* geometry, const int controller_zoom) const

@@ -70,7 +70,7 @@ namespace qmapcontrol
         virtual int epsg() const = 0;
 
         /*!
-         * Converts a world coorindate point (longitude/latitude) into the pixel point for a given zoom.
+         * Converts a world coordinate point (longitude/latitude) into the pixel point for a given zoom.
          * @param point_coord The world coordinate point to convert (longitude/latitude).
          * @param zoom The zoom level.
          * @return the converted world pixel point.
@@ -78,10 +78,10 @@ namespace qmapcontrol
         virtual PointWorldPx toPointWorldPx(const PointWorldCoord& point_coord, const int zoom) const = 0;
 
         /*!
-         * Converts a world pixel point into the coorindate point (longitude/latitude) for a given zoom.
+         * Converts a world pixel point into the coordinate point (longitude/latitude) for a given zoom.
          * @param point_px The world pixel point to convert.
          * @param zoom The zoom level.
-         * @return the converted world coorindate point (longitude/latitude).
+         * @return the converted world coordinate point (longitude/latitude).
          */
         virtual PointWorldCoord toPointWorldCoord(const PointWorldPx& point_px, const int zoom) const = 0;
 
@@ -91,6 +91,8 @@ namespace qmapcontrol
          * Projection constructor.
          */
         Projection() = default;
+
+        int ipow2(int exponent) const;
     };
 
     namespace projection
@@ -119,5 +121,7 @@ namespace qmapcontrol
          * @param type The projection type required.
          */
         QMAPCONTROL_EXPORT void set(const EPSG type);
+
+        Projection* create(const EPSG type);
     }
 }

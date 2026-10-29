@@ -50,6 +50,14 @@ namespace qmapcontrol
     {
         Q_OBJECT
     public:
+        enum TilesStatus
+        {
+            Valid,
+            Empty,
+            Loading
+        };
+
+        Q_ENUM(TilesStatus)
         //! Layer constructor
         /*!
          * This is used to construct a layer.
@@ -72,7 +80,7 @@ namespace qmapcontrol
         LayerMapAdapter& operator=(const LayerMapAdapter&) = delete;
 
         //! Destructor.
-        virtual ~LayerMapAdapter() = default;
+        ~LayerMapAdapter() override = default;
 
         /*!
          * Returns the Map Adapter from this Layer
@@ -87,14 +95,6 @@ namespace qmapcontrol
         void setMapAdapter(const std::shared_ptr<MapAdapter>& mapadapter);
 
         /*!
-         * Handles mouse press events (such as left-clicking an item on the layer).
-         * @param mouse_event The mouse event.
-         * @param mouse_point_coord The mouse point on the map in coord.
-         * @param controller_zoom The current controller zoom.
-         */
-        bool mousePressEvent(const QMouseEvent* mouse_event, const PointWorldCoord& mouse_point_coord, const int controller_zoom) const final;
-
-        /*!
          * Draws each map adapter and geometry to a pixmap using the provided painter.
          * @param painter The painter that will draw to the pixmap.
          * @param backbuffer_rect_px Only draw map tiles/geometries that are contained in the backbuffer rect (pixels).
@@ -102,12 +102,16 @@ namespace qmapcontrol
          */
         void draw(QPainter& painter, const RectWorldPx& backbuffer_rect_px, const int controller_zoom) const final;
 
+        TilesStatus getTilesStatus() const { return m_tilesStatus.load(); }
+
     private:
         /// The map adapter drawn by this layer.
         std::shared_ptr<MapAdapter> m_mapAdapter;
 
         /// Mutex to protect map adapter.
         mutable QReadWriteLock m_mapadapter_mutex;
+
+        mutable std::atomic<TilesStatus> m_tilesStatus;
 
         /// Issues prefetch requests for tiles around current view
         void prefetchTiles(int furthest_tile_left, int furthest_tile_top, int furthest_tile_right, int furthest_tile_bottom, int controller_zoom) const;

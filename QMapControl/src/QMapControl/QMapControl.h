@@ -37,16 +37,19 @@
 #include <QtNetwork/QNetworkProxy>
 #include <QtWidgets/QWidget>
 #include <QMutex>
+#include <QFutureSynchronizer>
 
 // STL includes.
 #include <chrono>
 
 // Local includes.
 #include "qmapcontrol_global.h"
+#include "ImageManager.h"
 #include "Geometry.h"
 #include "Layer.h"
 #include "Point.h"
 #include "Projection.h"
+#include "QMapControlHelpers.h"
 #include "QProgressIndicator.h"
 
 //! QMapControl namespace
@@ -114,7 +117,7 @@ namespace qmapcontrol
         QMapControl(const QSize& size_px,
                     QWidget* parent = nullptr,
                     bool redrawsEnabled = true,
-                    Qt::WindowFlags window_flags = 0);
+                    Qt::WindowFlags window_flags = Qt::WindowFlags());
 
         //! Disable copy constructor.
         QMapControl(const QMapControl&) = delete;
@@ -123,20 +126,14 @@ namespace qmapcontrol
         QMapControl& operator=(const QMapControl&) = delete;
 
         //! Destructor.
-        ~QMapControl();
+        ~QMapControl() override;
 
-        // Settings.       
+        // Settings.
         /*!
          * Set the background colour of the map control widget.
          * @param colour The background colour to set.
          */
         void setBackgroundColour(const QColor& colour = Qt::transparent);
-
-        /*!
-         * Whether the scaled primary screen image should be displayed during zoom changes in the background.
-         * @param visible Whether the scaled background image should be displayed.
-         */
-        void enableScaledBackground(const bool visible);
 
         /*!
          * Set whether the scalebar should be displayed within the widget.
@@ -151,14 +148,17 @@ namespace qmapcontrol
         void enableCrosshairs(const bool visible);
 
         /*!
-         * Enable or disable (temporarily) redraws of map backbuffer. Useful for
-         * limiting redraws issued by QMapControl internals
-         * when you know you don't need them right away (e.g. doing batch of operations
-         * at the same time like rebuilding markers/layers+zoom+scroll).
+         *  Waits until backbuffer redraw running in background thread finishes.
          */
-        void enableRedraws(bool enabled);
+        void waitForBackgroundRedrawFinished();
 
-        bool areRedrawsEnabled() const { return m_redrawsEnabled; }
+        /*!
+         * Set how much area should be covered for caching
+         * For static map views - 1.0, for usage with mouse - 2.0
+         * \param factor Multiplier of area to cover around primary screen
+         */
+        void setBackBufferScaleFactor(double factor = 2.0);
+
         /*!
          * Enables or disabled progress indicator display
          */
@@ -211,7 +211,6 @@ namespace qmapcontrol
 
         /*!
          * Stop following a Geometry.
-         * @param geometry The Geometry which should not followed anymore
          */
         void stopFollowingGeometry();
 
@@ -231,25 +230,13 @@ namespace qmapcontrol
         /*!
          * Check whether all coordinates are visible in the current viewport.
          * @param points_coord The coordinates to check.
-         * @param viewport_contraction Viewport can be contracted(>0)/expanded(<0) for
+         * @param viewport_contraction_pct Viewport can be contracted(>0)/expanded(<0) for
          * calculating the fitting of points (e.g. add "padding" so that some points are not too near the edge of viewport,
          * 0.1 == take out 10% percent of viewport from each side).
          * @return Whether all the coordinates are visible in the viewport.
          */
         bool viewportContainsAll(const std::vector<PointWorldCoord>& points_coord,
                                  const qreal viewport_contraction_pct = 0.0) const;
-
-        /*!
-         * Reset limited viewport rect (ie: disable it).
-         */
-        void resetLimitedViewportRect();
-
-        /*!
-         * Set a limited viewport rect.
-         * @param top_left_coord The top-left coordinate of the limited viewport rect.
-         * @param bottom_right_coord The bottom-right coordinate of the limited viewport rect.
-         */
-        void setLimitedViewportRect(const PointWorldCoord& top_left_coord, const PointWorldCoord& bottom_right_coord);
 
         // Map management.
         /*!
@@ -309,6 +296,12 @@ namespace qmapcontrol
          */
         void scrollViewDown(const double delta_px = 10.0);
 
+        /*!
+         * Scrolls the view by the given value in pixels and in display coordinates.
+         * @param delta_px The distance which the view should be scrolled in pixels.
+         */
+        void scrollView(const PointPx& delta_px);
+
         // Zoom management.
         /*!
          * Set the minimum zoom allowed.
@@ -323,10 +316,21 @@ namespace qmapcontrol
         void setZoomMaximum(const int zoom);
 
         /*!
+         * Set the minimum and maximum zoom allowed.
+         * @param zoom_minimum The minimum zoom allowed.
+         * @param zoom_maximum The maximum zoom allowed.
+         */
+        void setZoomMinMax(const int zoom_minimum, const int zoom_maximum);
+
+        /*!
          * Fetches the current zoom level.
          * @return the current zoom level.
          */
-        int getCurrentZoom() const;
+        int getCurrentZoom() const { return m_current_zoom; }
+
+        int getZoomMinimum() const { return m_zoom_minimum; }
+
+        int getZoomMaximum() const { return m_zoom_maximum; }
 
         // Mouse management.
         /*!
@@ -365,32 +369,32 @@ namespace qmapcontrol
          * Called when a mouse button is pressed down.
          * @param mouse_event The mouse event.
          */
-        void mousePressEvent(QMouseEvent* mouse_event);
+        void mousePressEvent(QMouseEvent* mouse_event) override;
 
         /*!
          * Called when a mouse button is released.
          * @param mouse_event The mouse event.
          */
-        void mouseReleaseEvent(QMouseEvent* mouse_event);
+        void mouseReleaseEvent(QMouseEvent* mouse_event) override;
 
         /*!
          * Called when a mouse button is double clicked.
          * @param mouse_event The mouse event.
          */
-        void mouseDoubleClickEvent(QMouseEvent* mouse_event);
+        void mouseDoubleClickEvent(QMouseEvent* mouse_event) override;
 
         /*!
          * Called when a mouse is moved.
          * @param mouse_event The mouse event.
          */
-        void mouseMoveEvent(QMouseEvent* mouse_event);
+        void mouseMoveEvent(QMouseEvent* mouse_event) override;
 
         /*!
          * Called when a mouse's wheel is scrolled.
          * @param wheel_event The mouse wheel event.
          */
 #if QT_CONFIG(wheelevent)
-        void wheelEvent(QWheelEvent* wheel_event);
+        void wheelEvent(QWheelEvent* wheel_event) override;
 #endif
 
         // Keyboard management.
@@ -398,14 +402,11 @@ namespace qmapcontrol
          * Called when a keyboard key is pressed.
          * @param key_event The keyboard key event.
          */
-        void keyPressEvent(QKeyEvent* key_event);
+        void keyPressEvent(QKeyEvent* key_event) override;
 
         // Drawing management.
-        /*!
-         * Fetch the primary screen pixmap.
-         * @return the primary screen pixmap.
-         */
-        QPixmap getPrimaryScreen() const;
+        /*! Whether the redraws of map backbuffer are enabled */
+        bool areRedrawsEnabled() const { return m_redrawsEnabled; }
 
     public slots:
         // Zoom management.
@@ -430,6 +431,27 @@ namespace qmapcontrol
          * Called when something requires the view to be redrawn.
          */
         void requestRedraw();
+
+    protected:
+        /*!
+         * Called by QWidget to redraw the current view to the QWidget display.
+         * @param paint_event The paint event.
+         */
+        void paintEvent(QPaintEvent* paint_event) override;
+
+        /*!
+         * Called by QWidget to resize the current view to the QWidget display.
+         * @param resize_event The resize event.
+         */
+        void resizeEvent(QResizeEvent* resize_event) override;
+
+        /*!
+         * Enable or disable (temporarily) redraws of map backbuffer. Useful for
+         * limiting redraws issued by QMapControl internals
+         * when you know you don't need them right away (e.g. doing batch of operations
+         * at the same time like rebuilding markers/layers+zoom+scroll).
+         */
+        void setRedrawsEnabled(bool enabled);
 
     private:
         // Map management.
@@ -476,12 +498,6 @@ namespace qmapcontrol
          */
         PointWorldCoord calculateMapFocusPoint(const std::vector<PointWorldCoord>& points_coord);
 
-        /*!
-         * Scrolls the view by the given value in pixels and in display coordinates.
-         * @param delta_px The distance which the view should be scrolled in pixels.
-         */
-        void scrollView(const PointPx& delta_px);
-
         // Zoom management.
         /*!
          * Check that the zoom settings are valid, and if not fixes them.
@@ -494,18 +510,6 @@ namespace qmapcontrol
         void updateControls();
 
         // Drawing management.
-        /*!
-         * Called by QWidget to redraw the current view to the QWidget display.
-         * @param paint_event The paint event.
-         */
-        void paintEvent(QPaintEvent* paint_event);
-
-        /*!
-         * Called by QWidget to resize the current view to the QWidget display.
-         * @param resize_event The resize event.
-         */
-        void resizeEvent(QResizeEvent* resize_event);
-
         /*!
          * Draw the primary screen and "auto-moving" geometries to the pixmap.
          * @param painter The pixmap painter to draw to.
@@ -529,20 +533,9 @@ namespace qmapcontrol
          */
         void redrawBackbuffer();
 
+        RectViewportPx primaryScreenRect() const;
+
     private slots:
-        // Geometry management.
-        /*!
-         * Called when a geometry changes its position.
-         * @param geometry The geometry that change position.
-         */
-        void geometryPositionChanged(const Geometry* geometry);
-
-        // Map management.
-        /*!
-         * Called during the animation loop to process the next step.
-         */
-        void animatedTick();
-
         // Drawing management.
         /*!
          * Called when the Image Manager has loaded all requested images (removes the zoom image).
@@ -552,12 +545,16 @@ namespace qmapcontrol
         /*!
          * Called when the backbuffer has been updated, to replace the existing primary screen and request a QWidget::update().
          * @param backbuffer_pixmap The updated backbuffer pixmap.
+         * @param update_viewport_size_px The m_viewport_size_px that the update was started on - it will differ from the m_viewport_size_px when resizizing
          * @param backbuffer_rect_px The updated backbuffer rect in pixels.
          * @param backbuffer_map_focus_px The updated backbuffer map foucs point in pixels.
          */
         void updatePrimaryScreen(const QPixmap& backbuffer_pixmap,
+                                 const QSize& update_viewport_size_px,
                                  const RectWorldPx& backbuffer_rect_px,
                                  const PointWorldPx& backbuffer_map_focus_px);
+
+        void handleDownloadFailure(TileDescriptor coord, Failure failure, RequestPurpose purpose);
 
     signals:
         // Geometry management.
@@ -609,10 +606,12 @@ namespace qmapcontrol
         /*!
          * Signal emitted when the backbuffer has been updated.
          * @param backbuffer_pixmap The updated backbuffer pixmap.
+         * @param update_viewport_size_px The m_viewport_size_px that the update was started on - it will differ from the m_viewport_size_px when resizizing
          * @param backbuffer_rect_px The updated backbuffer rect in pixels.
          * @param backbuffer_map_focus_px The updated backbuffer map foucs point in pixels.
          */
         void updatedBackBuffer(const QPixmap& backbuffer_pixmap,
+                               const QSize& update_viewport_size_px,
                                const RectWorldPx& backbuffer_rect_px,
                                const PointWorldPx& backbuffer_map_focus_px);
 
@@ -626,6 +625,16 @@ namespace qmapcontrol
 
         /// Emitted when size is changed
         void resized(const QSize& size);
+
+        /// Emitted when view cannot be rendered due to unreachable server
+        void connectivityChanged(bool connected);
+
+        /// after resize there is a back buffer then the front buffer update
+        /// only after this we can take the image of the widget
+        void frontBufferUpdated(const QSize& size);
+
+    protected:
+        bool canPullTiles() { return m_canPullTiles; }
 
     private:
         /// Whether the scale should be visible.
@@ -643,32 +652,20 @@ namespace qmapcontrol
         /// Whether layer mouse events are enabled.
         bool m_layer_mouse_events_enabled;
 
-        /// The current following geometry signal/slot connection.
-        QMetaObject::Connection m_following_geometry;
-
         /// The viewport (visible-part of each layer) size in pixels.
         QSize m_viewport_size_px;
 
         /// The viewport (visible-part of each layer) top-left offset for the center point in pixels.
         PointViewportPx m_viewport_center_px;
 
-        /// The viewing bounding box coord (set to RectWorldCoord(0.0, 0.0, 0.0, 0.0) to disable.
-        RectWorldCoord m_limited_viewport_rect_coord;
-
         /// The current map focus point in coordinates.
         PointWorldCoord m_map_focus_coord;
 
-        /// Mutex to protect the animation loop.
-        QMutex m_animated_mutex;
+        /// Helper class for following geometries
+        FollowGeometryHelper m_followGeometryHelper;
 
-        /// Animation map focus point target.
-        PointWorldCoord m_animated_map_focus_point;
-
-        /// Number of animation steps remaining.
-        int m_animated_steps;
-
-        /// The number of millseconds to wait between each step.
-        std::chrono::milliseconds m_animated_interval;
+        /// Helper class for smooth scrolling animation
+        AnimationHelper m_animationHelper;
 
         /// The minimum zoom allowed.
         int m_zoom_minimum;
@@ -712,15 +709,6 @@ namespace qmapcontrol
         /// Primary screen backbuffer rect in pixels.
         RectWorldPx m_primary_screen_backbuffer_rect_px;
 
-        /// Whether the primary screen scaled is drawn in the background.
-        bool m_primary_screen_scaled_enabled;
-
-        /// Primary screen scaled pixmap (zoom in/out).
-        QPixmap m_primary_screen_scaled;
-
-        /// Primary screen scaled pixmap offset (wheel events only).
-        PointPx m_primary_screen_scaled_offset;
-
         /// Mutex to protect the backbuffer during the redraw process.
         QMutex m_backbuffer_mutex;
 
@@ -733,8 +721,18 @@ namespace qmapcontrol
         /// Background colour of the map control widget
         QColor m_backgroundColor;
 
+        QFutureSynchronizer<void> m_futureSync;
+
         /// Whether the redraws of map backbuffer are enabled
         bool m_redrawsEnabled;
 
+        /// Tracks if we issues were encountered during fetching tiles
+        bool m_canPullTiles = true;
+
+        /// Controls how big backbuffer image should be respective to the actual visible image
+        /// e.g. makes the backbuffer n times bigger than the actual visible area,
+        /// so in case of pan the map is not fully redrawn,
+        /// only it copyes out the appropriate part from backbuffer to front
+        double m_backBufferScaleFactor = 2.0;
     };
 }

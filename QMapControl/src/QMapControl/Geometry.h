@@ -116,7 +116,7 @@ namespace qmapcontrol
         Geometry& operator=(const Geometry&) = delete;
 
         //! Destructor.
-        virtual ~Geometry() = default;
+        ~Geometry() override = default;
 
         /*!
          * Fetches the zindex of the geometry
@@ -126,7 +126,7 @@ namespace qmapcontrol
 
         /*!
          * Set the ZIndex of this geometry
-         * \param z_index
+         * \param z_index ZIndex
          */
         void setZIndex(const int z_index);
 
@@ -261,6 +261,18 @@ namespace qmapcontrol
          */
         virtual void draw(QPainter& painter, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom) = 0;
 
+        /*!
+         * Draws the clipped region of the geometry using the provided path.
+         * @param path The path that will be clipped.
+         * @param backbuffer_rect_coord Only draw geometries that are contained in the backbuffer rect (world coordinates).
+         * @param controller_zoom The current controller zoom.
+         */
+        virtual void drawClippath(QPainterPath& path, const RectWorldCoord& backbuffer_rect_coord, const int controller_zoom) const {
+            Q_UNUSED(path);
+            Q_UNUSED(backbuffer_rect_coord);
+            Q_UNUSED(controller_zoom);
+        }
+
     signals:
         /*!
          * Signal emitted when a geometry is clicked.
@@ -272,12 +284,12 @@ namespace qmapcontrol
          * Signal emitted when a geometry changes its position.
          * @param geometry The geometry that change position.
          */
-        void positionChanged(const Geometry* geometry) const;
+        void positionChanged(const Geometry* geometry);
 
         /*!
          * Signal emitted when a change has occurred that requires the layer to be redrawn.
          */
-        void requestRedraw() const;
+        void requestRedraw();
 
     private:
         /// The geometry type.

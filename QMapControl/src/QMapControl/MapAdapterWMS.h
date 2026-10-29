@@ -27,7 +27,7 @@
 
 // Local includes.
 #include "qmapcontrol_global.h"
-#include "MapAdapter.h"
+#include "MapAdapterRemote.h"
 
 namespace qmapcontrol
 {
@@ -38,7 +38,7 @@ namespace qmapcontrol
      * @author Kai Winter <kaiwinter@gmx.de>
      * @author Chris Stylianou <chris5287@gmail.com>
      */
-    class QMAPCONTROL_EXPORT MapAdapterWMS : public MapAdapter
+    class QMAPCONTROL_EXPORT MapAdapterWMS : public MapAdapterRemote
     {
     public:
         //! Constructor.
@@ -50,9 +50,8 @@ namespace qmapcontrol
          * %5 is where you specify the tile size in pixels.
          * @param base_url The base url of the map server.
          * @param epsg_projections The supported EPSG projections.
-         * @param parent QObject parent ownership.
          */
-        MapAdapterWMS(const QUrl& base_url, const std::set<projection::EPSG>& epsg_projections, QObject* parent = nullptr);
+        MapAdapterWMS(const QUrl& base_url, const std::set<projection::EPSG>& epsg_projections);
 
         //! Disable copy constructor.
         MapAdapterWMS(const MapAdapterWMS&) = delete;
@@ -61,7 +60,7 @@ namespace qmapcontrol
         MapAdapterWMS& operator=(const MapAdapterWMS&) = delete;
 
         //! Destructor.
-        virtual ~MapAdapterWMS() = default;
+        ~MapAdapterWMS() override = default;
 
         /*!
          * Change the base url post initialisation (performs query modifications).
@@ -76,7 +75,7 @@ namespace qmapcontrol
          * @param controller_zoom The current controller zoom.
          * @return the generated url.
          */
-        virtual QUrl tileQuery(const int x, const int y, const int controller_zoom) const override;
+        QUrl tileQuery(const int x, const int y, const int controller_zoom) const override;
 
     protected:
         /*!

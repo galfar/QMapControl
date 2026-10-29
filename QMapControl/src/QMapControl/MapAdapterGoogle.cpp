@@ -29,11 +29,11 @@ namespace qmapcontrol
 {
     constexpr char kGoogleMapUrlFormat[] = "http://mt.google.com/vt/hl=en&x=%x&y=%y&z=%zoom&lyrs=";
 
-    MapAdapterGoogle::MapAdapterGoogle(const MapAdapterGoogle::GoogleLayerType layer_type,
-                                       QObject* parent)
-        : MapAdapterTile(QUrl(kGoogleMapUrlFormat + layerTypeToString(layer_type)), { projection::EPSG::SphericalMercator },
-                         0, 19, 0, false, parent)
+    MapAdapterGoogle::MapAdapterGoogle(const MapAdapterGoogle::GoogleLayerType layer_type)
+        : MapAdapterRemote(QUrl(kGoogleMapUrlFormat + layerTypeToString(layer_type)), { projection::EPSG::SphericalMercator },
+                           0, 19, false)
     {
+        m_sourceId = m_sourceId + "-" + layerTypeToString(layer_type);
     }
 
     QString MapAdapterGoogle::layerTypeToString(const MapAdapterGoogle::GoogleLayerType layer_type)
@@ -57,5 +57,5 @@ namespace qmapcontrol
             default:
                 return "m";
         }
-    }    
+    }
 }

@@ -32,29 +32,57 @@
 #include <QPixmap>
 #include <QTimer>
 #include <QtNetwork/QAuthenticator>
-#include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkProxy>
 
 // Local includes.
 #include "qmapcontrol_global.h"
+#include "INetworkAccessManager.hpp"
 
 /*!
  * @author Kai Winter <kaiwinter@gmx.de>
  * @author Chris Stylianou <chris5287@gmail.com>
  */
+
 namespace qmapcontrol
 {
+    // Q_NAMESPACE can appear only once for Q_ENUM_NS to work
+    // https://bugreports.qt.io/browse/QTBUG-68611
+    Q_NAMESPACE
+
+    enum class RequestPurpose
+    {
+        /// Tile image is requested by map layer painting for immediate display
+        Display,
+        /// Tile image is requested by map layer painting for possible display in near future
+        Prefetch,
+        /// Tile data is to be cached to disk from remote source
+        Cache
+    };
+    Q_ENUM_NS(RequestPurpose)
+
+    enum class Failure
+    {
+        Cancelled,           ///< Caller requested cancellation
+        GivenUp,             ///< Gave up trying to get this
+        ContentDoesNotExist, ///< Asking for wrong content (like non-existant zoom level)
+        ContentDenied,       ///< Don't try again; server is telling us no-go!
+        CantConnect          ///< Issues we can't recover from short-term;
+    };
+    Q_ENUM_NS(Failure);
+
     class QMAPCONTROL_EXPORT NetworkManager : public QObject
     {
         Q_OBJECT
+
     public:
         //! Constructor.
         /*!
          * This construct a Network Manager.
          * @param parent QObject parent ownership.
          */
-        explicit NetworkManager(QObject* parent = nullptr);
+        explicit NetworkManager(INetworkAccessManager* networkAccessManager,
+                                QObject* parent = nullptr);
 
         //! Disable copy constructor.
         NetworkManager(const NetworkManager&) = delete;
@@ -63,15 +91,17 @@ namespace qmapcontrol
         NetworkManager& operator=(const NetworkManager&) = delete;
 
         //! Destructor.
-        ~NetworkManager();
+        ~NetworkManager() override;
 
         /*!
          * Set the network proxy to use.
          * @param proxy The network proxy to use.
-         * @param useName Proxy user name if needed
+         * @param userName Proxy user name if needed
          * @param password Proxy password if needed
          */
-        void setProxy(const QNetworkProxy& proxy, const QString& userName = QString(), const QString& password = QString());
+        void setProxy(const QNetworkProxy& proxy,
+                      const QString& userName = QString(),
+                      const QString& password = QString());
 
         /*!
          * Aborts all current downloading threads.
@@ -85,27 +115,15 @@ namespace qmapcontrol
         */
         int downloadQueueSize() const;
 
-        /*!
-         * Checks if the given url resource is currently being downloaded.
-         * @param url The url of the resource.
-         * @return boolean, if the url resource is already downloading.
-         */
-        bool isDownloading(const QUrl& url) const;
-
-        /*!
-         * Sets the disk cache for network manager. Useful for filling and updating of local
-         * cache for offline usage.
-         * @param qCache the disk cache object to set
-         */
-        void setCache(QAbstractNetworkCache* cache);
+        /*! return default suggested user agent */
+        static QByteArray defaultUserAgent();
 
     public slots:
         /*!
          * Downloads an image resource for the given url.
-         * @param url The image url to download.
-         * @param cacheOnly If true image is only stored to disk cache and not for display.
+         * @param url The tile url to download.
          */
-        void downloadImage(const QUrl& url, bool cacheOnly);
+        void downloadTile(const QUrl& url);
 
     signals:
         /*!
@@ -120,23 +138,17 @@ namespace qmapcontrol
         void downloadingFinished();
 
         /*!
-         * Signal emitted when an image has been downloaded for display.
-         * @param url The url that the image was downloaded from.
-         * @param pixmap The image.
+         * Signal emitted when a tile has been downloaded.
+         * @param tileData Raw tile data
          */
-        void imageDownloaded(const QUrl& url, const QPixmap& pixmap);
+        void tileDownloaded(const QUrl& url, const QByteArray& tileData);
 
         /*!
-         * Signal emitted when an image has been downloaded to disk cache.
-         * @param url The url that the image was downloaded from.
-         * */
-        void imageCached(const QUrl& url);
-
-        /*!
-         * Signal emitted when image download fails for reasons other than cancellation.
-         * \param The url that the image was downloaded from.
+         * Signal emitted when tile download fails for reasons other than cancellation.
+         * \param url Url that the image was downloaded from.
+         * \param failure Informs about failure
          */
-        void imageDownloadFailed(const QUrl& url, QNetworkReply::NetworkError error);
+        void tileDownloadFailed(const QUrl& url, Failure failure);
 
     private slots:
         /*!
@@ -152,25 +164,27 @@ namespace qmapcontrol
          */
         void downloadFinished(QNetworkReply* reply);
 
-        /*!
+        /*! Set maximum transfer time before request is considered timed out
           */
-        void abortTimeoutedRequests();
+        void setTimeout(int timeout_ms);
 
     private:
-        QNetworkAccessManager m_accessManager;
+        INetworkAccessManager* m_accessManager;
 
         /// Downloading image queue.
         QMap<QNetworkReply*, QUrl> m_downloadRequests;
+        using RequestsIterator = QMapIterator<QNetworkReply*, QUrl>;
+        using MutableRequestsIterator = QMutableMapIterator<QNetworkReply*, QUrl>;
 
         /// Mutex protecting downloading image queue.
         mutable QMutex m_mutex_downloading_image;
 
+        int m_timeout_ms = 30*1000;
         QString m_proxyUserName;
         QString m_proxyPassword;
+        QByteArray m_userAgentHeader;
 
-        /// For periodic checks of timeouted requests
-        QTimer m_timeoutTimer;
-
-        void requestDownload(const QUrl& url, bool cacheOnly);
+        void requestDownload(const QUrl& url);
     };
 }
+

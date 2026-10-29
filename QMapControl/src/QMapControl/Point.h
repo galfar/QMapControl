@@ -46,15 +46,15 @@ namespace qmapcontrol
     public:
         PointWorldCoord() : m_raw_point() {}
         PointWorldCoord(const qreal longitude, const qreal latitude) : m_raw_point(longitude, latitude) { }
-        PointWorldCoord(QPointF rawPoint) : m_raw_point(rawPoint) { }
+        PointWorldCoord(const QPointF& rawPoint) : m_raw_point(rawPoint) { }
         inline QPointF rawPoint() const { return m_raw_point; }
         inline qreal longitude() const { return m_raw_point.x(); }
         inline qreal latitude() const { return m_raw_point.y(); }
         inline void setLongitude(const qreal longitude) { m_raw_point.setX(longitude); }
         inline void setLatitude(const qreal latitude) { m_raw_point.setY(latitude); }
 
-        inline bool operator==(const PointWorldCoord& p) { return m_raw_point == p.rawPoint(); }
-        inline bool operator!=(const PointWorldCoord& p)  { return m_raw_point != p.rawPoint(); }
+        inline bool operator==(const PointWorldCoord& p) const { return m_raw_point == p.rawPoint(); }
+        inline bool operator!=(const PointWorldCoord& p) const { return m_raw_point != p.rawPoint(); }
     protected:
         QPointF m_raw_point;
     };
@@ -156,7 +156,7 @@ namespace qmapcontrol
         inline qreal bottomPx() const { return m_raw_rect.bottom(); }
         inline PointWorldPx centerPx() const { return PointWorldPx(m_raw_rect.center().x(), m_raw_rect.center().y()); }
         inline PointWorldPx topLeftPx() const { return PointWorldPx(leftPx(), topPx()); }
-        inline PointWorldPx bottomRightPx() const { return PointWorldPx(rightPx(), bottomPx()); }
+        inline PointWorldPx bottomRightPx() const { return PointWorldPx(rightPx(), bottomPx()); }        
     protected:
         QRectF m_raw_rect;
     };
